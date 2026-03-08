@@ -1,0 +1,86 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "eBPF Event Interceptor",
+  "projectDescription": "Network event tracers for Linux using eBPF (BCC) to monitor TCP and UDP traffic in real-time",
+  "theme": "aspen",
+  "primaryColor": "#f58914",
+  "lightColor": "#ffffff",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/ebpf-overview",
+              "concepts/event-collection"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/tcp-monitoring",
+              "guides/udp-monitoring",
+              "guides/building-from-source",
+              "guides/testing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "TCP Event API",
+            "pages": [
+              "api/tcp/overview",
+              "api/tcp/functions",
+              "api/tcp/data-structures"
+            ]
+          },
+          {
+            "group": "UDP Event API",
+            "pages": [
+              "api/udp/overview",
+              "api/udp/functions",
+              "api/udp/data-structures"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time TCP connection tracking with kprobes",
+    "UDP traffic monitoring for IPv4 and IPv6",
+    "Network metrics collection (bytes, packets, ports)",
+    "Process attribution with PID, UID, and command names",
+    "Netlink socket diagnostics integration",
+    "High-performance perf buffer event streaming"
+  ],
+  "publicApiSurface": [
+    "AddProbe() - Initialize TCP event tracer",
+    "setupBPF() - Setup BPF program for TCP monitoring",
+    "DequeuePerfEvent() - Retrieve TCP events from queue",
+    "cleanup() - Cleanup and detach TCP probes",
+    "getStatus() - Get TCP tracer status",
+    "AddProbe() - Initialize UDP event tracer",
+    "setupBPF() - Setup BPF program for UDP monitoring",
+    "DequeuePerfEvent() - Retrieve UDP events from queue",
+    "cleanup() - Cleanup and detach UDP probes",
+    "getStatus() - Get UDP tracer status",
+    "tcp_event_t - TCP event data structure",
+    "udp_event_t - UDP event data structure"
+  ]
+}
