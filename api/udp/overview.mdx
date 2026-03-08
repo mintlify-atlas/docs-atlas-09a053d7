@@ -1,0 +1,188 @@
+---
+title: "UDP Event API Overview"
+description: "Real-time UDP connection tracking and monitoring using eBPF"
+---
+
+## Introduction
+
+The UDP Event API provides kernel-level UDP traffic interception and monitoring capabilities using eBPF (Extended Berkeley Packet Filter). This library enables real-time tracking of UDP connections, packets, and data transfer statistics with minimal performance overhead.
+
+## Library Information
+
+<ParamField path="Library File" type="string">
+  `/opt/RealTimeKql/lib/libudpEvent.so`
+</ParamField>
+
+<ParamField path="Version" type="string">
+  1.03a (UDP Tracer Ver 1.04b)
+</ParamField>
+
+<ParamField path="BCC Dependency" type="string">
+  Requires BCC (BPF Compiler Collection) library
+</ParamField>
+
+## Header Files
+
+To use the UDP Event API, include the following header in your application:
+
+```c
+#include "common.h"  // Provides udp_event_t structure definition
+```
+
+The library exports C-compatible functions that can be used from both C and C++ applications.
+
+## Basic Usage Workflow
+
+### 1. Initialize the Tracer
+
+```c
+extern void AddProbe();
+
+// Start UDP event tracing
+AddProbe();
+```
+
+This function initializes the BPF program and attaches kernel probes. It runs asynchronously in a detached thread.
+
+### 2. Wait for Setup Completion
+
+```c
+extern unsigned getStatus();
+
+// Poll until BPF is ready
+while (getStatus() == 0) {
+    usleep(100000);  // Wait 100ms
+}
+```
+
+### 3. Consume Events
+
+```c
+extern struct udp_event_t DequeuePerfEvent();
+
+// Read UDP events (blocking call)
+while (1) {
+    struct udp_event_t event = DequeuePerfEvent();
+    // Process event data
+    printf("PID %u: %llu bytes sent, %llu bytes received\n",
+           event.pid, event.tx_b, event.rx_b);
+}
+```
+
+### 4. Cleanup
+
+```c
+extern void cleanup();
+
+// Detach kernel probes and cleanup resources
+cleanup();
+```
+
+## Key Differences from TCP API
+
+### No Parameters Required
+
+Unlike the TCP Event API, the UDP `AddProbe()` function takes **no parameters**:
+
+```c
+// TCP version (requires filter)
+void AddProbe(const char *filter);  // NOT applicable to UDP
+
+// UDP version (no parameters)
+void AddProbe();  // Correct for UDP
+```
+
+The UDP tracer monitors all UDP traffic system-wide without filtering options.
+
+### Additional Packet Count Fields
+
+The UDP event structure includes packet counters that are not present in the TCP API:
+
+- `rxPkts` - Number of packets received
+- `txPkts` - Number of packets transmitted
+
+These fields are particularly useful for UDP analysis since UDP is packet-oriented rather than stream-oriented.
+
+### Different Kernel Hooks
+
+The UDP tracer attaches to different kernel functions:
+
+- `ip4_datagram_connect` / `ip6_datagram_connect` - Connection establishment
+- `udp_sendmsg` / `udpv6_sendmsg` - Packet transmission
+- `udp_recvmsg` / `udpv6_recvmsg` - Packet reception
+- `udp_destruct_sock` - Socket cleanup
+
+## Threading Model
+
+- **AddProbe()**: Spawns a detached background thread that runs the BPF event loop
+- **DequeuePerfEvent()**: Blocks the calling thread until an event is available
+- **Thread Safety**: Internal synchronization uses pthread mutexes and condition variables
+
+## Event Queue Behavior
+
+- Maximum queue size: **1024 events** (MAXQSIZE)
+- When the queue is full, the oldest events are dropped ("shedding")
+- A warning message is printed when events are shed: `"Shedding UDP events.."`
+
+## Supported Address Families
+
+- **AF_INET** (IPv4)
+- **AF_INET6** (IPv6)
+
+Both address families are fully supported with automatic detection and proper address conversion.
+
+## Example: Complete Application
+
+```c
+#include <stdio.h>
+#include <unistd.h>
+#include "common.h"
+
+extern void AddProbe();
+extern struct udp_event_t DequeuePerfEvent();
+extern unsigned getStatus();
+extern void cleanup();
+
+int main() {
+    // Initialize UDP tracing
+    AddProbe();
+    
+    // Wait for BPF setup to complete
+    printf("Waiting for BPF initialization...\n");
+    while (getStatus() == 0) {
+        usleep(100000);
+    }
+    printf("BPF ready. Monitoring UDP traffic...\n");
+    
+    // Process events
+    while (1) {
+        struct udp_event_t event = DequeuePerfEvent();
+        
+        printf("[%lu] Process: %s (PID %u, UID %u)\n",
+               event.EventTime, event.task, event.pid, event.UserId);
+        printf("  %s:%u -> %s:%u\n",
+               event.SADDR, event.SPT, event.DADDR, event.DPT);
+        printf("  TX: %llu bytes (%u pkts), RX: %llu bytes (%u pkts)\n",
+               event.tx_b, event.txPkts, event.rx_b, event.rxPkts);
+    }
+    
+    // Cleanup (typically called on signal handler)
+    cleanup();
+    return 0;
+}
+```
+
+## Compilation
+
+Link against the UDP Event library:
+
+```bash
+gcc -o myapp myapp.c -L/opt/RealTimeKql/lib -ludpEvent -lpthread
+```
+
+## Requirements
+
+- Linux kernel with eBPF support (kernel 4.4+)
+- BCC (BPF Compiler Collection) installed
+- Root privileges (required for kernel probe attachment)
+- pthread library

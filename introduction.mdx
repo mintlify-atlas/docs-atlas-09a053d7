@@ -1,0 +1,122 @@
+---
+title: Introduction
+description: Real-time network event monitoring for Linux using eBPF technology
+---
+
+## What is eBPF Event Interceptor?
+
+eBPF Event Interceptor is a high-performance network monitoring library that provides real-time visibility into TCP and UDP traffic on Linux systems. Built on top of the BPF Compiler Collection (BCC), it captures detailed network events at the kernel level with minimal overhead, making it ideal for observability, security monitoring, and performance analysis.
+
+## Key Features
+
+### TCP Connection Monitoring
+
+Capture comprehensive TCP connection lifecycle events including:
+
+- **Connection metadata**: Process ID, User ID, command name
+- **Traffic metrics**: Bytes received (`rx_b`), bytes transmitted (`tx_b`)
+- **Segment counters**: TCP segments in/out (`tcpi_segs_in`, `tcpi_segs_out`)
+- **Network endpoints**: Source/destination addresses and ports (IPv4 and IPv6)
+- **Timing data**: Event timestamps in nanosecond precision
+
+Monitoring triggers on TCP state transitions, capturing events when connections close (`TCP_CLOSE` state).
+
+### UDP Traffic Monitoring
+
+Track UDP datagram flow with detailed metrics:
+
+- **Packet counters**: Packets received (`rxPkts`), packets transmitted (`txPkts`)
+- **Byte counters**: Total bytes sent and received
+- **Process attribution**: Link traffic to specific processes and users
+- **Address family support**: Both IPv4 and IPv6
+
+### Low-Level Kernel Integration
+
+The library attaches eBPF probes directly to kernel functions:
+
+- `tcp_set_state` kprobe for TCP monitoring
+- Socket-level hooks for UDP tracking
+- Perf event maps for efficient data transfer from kernel to userspace
+
+## System Requirements
+
+<CardGroup cols={2}>
+  <Card title="Operating System" icon="linux">
+    Linux kernel with eBPF support (4.1+)
+  </Card>
+  <Card title="BCC Framework" icon="code">
+    BPF Compiler Collection library and headers
+  </Card>
+  <Card title="Build Tools" icon="hammer">
+    CMake 3.10+ and C/C++ compiler (GCC/Clang)
+  </Card>
+  <Card title="Permissions" icon="shield">
+    Root privileges required for eBPF operations
+  </Card>
+</CardGroup>
+
+<Note>
+The library has been tested on Ubuntu 18.04 and 20.04. Other Linux distributions with eBPF support should work but may require different BCC installation steps.
+</Note>
+
+## Use Cases
+
+### Network Observability
+
+Gain real-time insights into network traffic patterns:
+
+- Monitor active connections and their resource consumption
+- Track per-process network usage
+- Identify bandwidth-heavy applications
+- Correlate network events with application behavior
+
+### Security Monitoring
+
+Detect suspicious network activity:
+
+- Track unauthorized connections
+- Monitor data exfiltration attempts
+- Identify unusual traffic patterns
+- Audit network access by user and process
+
+### Performance Analysis
+
+Optimize network performance:
+
+- Measure connection lifespans and throughput
+- Analyze TCP segment counts for retransmission detection
+- Profile application network efficiency
+- Correlate network metrics with system performance
+
+### Cloud and Container Environments
+
+Ideal for modern infrastructure:
+
+- Monitor containerized workloads
+- Track microservice communication
+- Analyze east-west traffic in Kubernetes clusters
+- Implement custom network telemetry pipelines
+
+## Architecture Overview
+
+The library operates in two layers:
+
+1. **Kernel Space (eBPF)**: Lightweight probes attached to kernel functions that capture network events with minimal overhead
+2. **User Space (C/C++)**: Shared libraries (`libtcpEvent.so`, `libudpEvent.so`) that consume events via perf buffers and provide a simple API
+
+Events are transferred from kernel to userspace using BPF perf output maps, providing high-throughput, low-latency event delivery.
+
+<Warning>
+eBPF programs require root privileges (or `CAP_BPF` capability) to load into the kernel. Always review the eBPF code before deployment in production environments.
+</Warning>
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install dependencies and build the libraries
+  </Card>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Run your first network monitoring example
+  </Card>
+</CardGroup>

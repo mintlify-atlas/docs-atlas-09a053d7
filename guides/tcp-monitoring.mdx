@@ -1,0 +1,395 @@
+---
+title: TCP Monitoring
+description: Monitor TCP connections using eBPF with the TCP Event Interceptor
+---
+
+The TCP Event Interceptor captures TCP connection lifecycle events using eBPF kernel probes. It tracks connections from establishment to closure, recording network statistics including bytes transferred, segments sent/received, and connection metadata.
+
+## Overview
+
+The TCP tracer attaches to the `tcp_set_state` kernel function to monitor TCP state transitions. When a connection closes (`TCP_CLOSE` state), it generates an event containing complete connection statistics.
+
+## Event Structure
+
+Each TCP event contains the following fields:
+
+```c
+struct tcp_event_t {
+    uint64_t EventTime;        // Event timestamp (nanoseconds)
+    uint32_t pid;              // Process ID
+    uint32_t UserId;           // User ID
+    uint64_t rx_b;             // Bytes received
+    uint64_t tx_b;             // Bytes transmitted (acked)
+    uint32_t tcpi_segs_out;    // TCP segments sent
+    uint32_t tcpi_segs_in;     // TCP segments received
+    uint16_t family;           // Address family (AF_INET or AF_INET6)
+    uint16_t SPT;              // Source port
+    uint16_t DPT;              // Destination port
+    char task[128];            // Process/command name
+    char SADDR[128];           // Source IP address (string)
+    char DADDR[128];           // Destination IP address (string)
+};
+```
+
+## Initializing the TCP Tracer
+
+<Steps>
+  <Step title="Load the shared library">
+    Load the TCP event interceptor library using `dlopen`:
+
+    ```c
+    #include <dlfcn.h>
+    
+    #define SOFILE "/opt/RealTimeKql/lib/libtcpEvent.so"
+    
+    void *handle = dlopen(SOFILE, RTLD_LAZY);
+    if (!handle) {
+        fprintf(stderr, "Failed to load library: %s\n", dlerror());
+        exit(EXIT_FAILURE);
+    }
+    ```
+  </Step>
+
+  <Step title="Resolve the AddProbe function">
+    Get the `AddProbe` function to attach the BPF program:
+
+    ```c
+    dlerror(); // Clear errors
+    void (*AddProbe)(const char *) = dlsym(handle, "AddProbe");
+    
+    char *error = dlerror();
+    if (error) {
+        fprintf(stderr, "Failed to resolve AddProbe: %s\n", error);
+        exit(EXIT_FAILURE);
+    }
+    ```
+  </Step>
+
+  <Step title="Resolve the DequeuePerfEvent function">
+    Get the event dequeue function:
+
+    ```c
+    dlerror();
+    struct tcp_event_t (*DequeuePerfEvent)() = dlsym(handle, "DequeuePerfEvent");
+    
+    error = dlerror();
+    if (error) {
+        fprintf(stderr, "Failed to resolve DequeuePerfEvent: %s\n", error);
+        exit(EXIT_FAILURE);
+    }
+    ```
+  </Step>
+
+  <Step title="Resolve additional functions">
+    Get status checking and cleanup functions:
+
+    ```c
+    // Get status function
+    unsigned (*getStatus)() = dlsym(handle, "getStatus");
+    if (dlerror()) {
+        fprintf(stderr, "Failed to resolve getStatus\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    // Get cleanup function
+    void (*cleanup)() = dlsym(handle, "cleanup");
+    if (dlerror()) {
+        fprintf(stderr, "Failed to resolve cleanup\n");
+        exit(EXIT_FAILURE);
+    }
+    ```
+  </Step>
+
+  <Step title="Attach the BPF probe">
+    Call `AddProbe` with your BPF program:
+
+    ```c
+    AddProbe(BPF_PROGRAM);
+    ```
+
+    The BPF program should attach to `tcp_set_state` and define the event structure matching the kernel's TCP socket fields.
+  </Step>
+
+  <Step title="Wait for initialization">
+    Wait for the tracer to be ready:
+
+    ```c
+    while (!getStatus()) {
+        puts("Waiting for tracer initialization...");
+        sleep(1);
+    }
+    ```
+  </Step>
+</Steps>
+
+## Complete Monitoring Example
+
+Here's a complete example based on the test implementation:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <dlfcn.h>
+#include <signal.h>
+#include <unistd.h>
+#include "common.h"
+
+#define SOFILE "/opt/RealTimeKql/lib/libtcpEvent.so"
+
+void (*cleanup)();
+
+void signalHandler(int signum) {
+    printf("Interrupted by signal %u\n", signum);
+    cleanup();
+    exit(signum);
+}
+
+void printEvent(struct tcp_event_t *event) {
+    if (!event) return;
+    
+    printf("---\n");
+    printf("PID: %d\n", event->pid);
+    printf("UID: %d\n", event->UserId);
+    printf("Bytes received: %ld\n", event->rx_b);
+    printf("Bytes sent: %ld\n", event->tx_b);
+    printf("Segments out: %d\n", event->tcpi_segs_out);
+    printf("Segments in: %d\n", event->tcpi_segs_in);
+    printf("Command: %s\n", event->task);
+    printf("Source: %s:%d\n", event->SADDR, event->SPT);
+    printf("Destination: %s:%d\n", event->DADDR, event->DPT);
+    printf("Event time: %ld\n", event->EventTime);
+    printf("---\n");
+}
+
+int main() {
+    // Load library
+    void *handle = dlopen(SOFILE, RTLD_LAZY);
+    if (!handle) {
+        fprintf(stderr, "dlopen failed: %s\n", dlerror());
+        exit(EXIT_FAILURE);
+    }
+    
+    // Resolve symbols
+    void (*AddProbe)(const char *) = dlsym(handle, "AddProbe");
+    struct tcp_event_t (*DequeuePerfEvent)() = dlsym(handle, "DequeuePerfEvent");
+    cleanup = dlsym(handle, "cleanup");
+    unsigned (*getStatus)() = dlsym(handle, "getStatus");
+    
+    // Check for errors (simplified)
+    if (!AddProbe || !DequeuePerfEvent || !cleanup || !getStatus) {
+        fprintf(stderr, "Failed to resolve symbols\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    // Setup signal handler
+    signal(SIGINT, signalHandler);
+    
+    // Attach probe with your BPF program
+    AddProbe(BPF_PROGRAM);
+    
+    // Wait for initialization
+    while (!getStatus()) {
+        sleep(1);
+    }
+    
+    // Main event loop
+    while (1) {
+        struct tcp_event_t event = DequeuePerfEvent();
+        printEvent(&event);
+    }
+    
+    dlclose(handle);
+    return 0;
+}
+```
+
+## Interpreting Event Data
+
+### Network Statistics
+
+<CardGroup cols={2}>
+  <Card title="rx_b" icon="download">
+    Total bytes received on the connection (from `tcp_sock->bytes_received`)
+  </Card>
+  <Card title="tx_b" icon="upload">
+    Total bytes acknowledged/transmitted (from `tcp_sock->bytes_acked`)
+  </Card>
+  <Card title="tcpi_segs_out" icon="arrow-up">
+    Number of TCP segments sent (from `tcp_sock->data_segs_out`)
+  </Card>
+  <Card title="tcpi_segs_in" icon="arrow-down">
+    Number of TCP segments received (from `tcp_sock->data_segs_in`)
+  </Card>
+</CardGroup>
+
+### Process Information
+
+- **pid**: Process ID that owns the socket
+- **UserId**: User ID of the process
+- **task**: Process name (up to 128 characters)
+
+<Note>
+  The process information is captured at connection establishment or close. For long-lived connections, the process may have changed ownership.
+</Note>
+
+### Connection Endpoints
+
+- **family**: `AF_INET` (2) for IPv4, `AF_INET6` (10) for IPv6
+- **SADDR/SPT**: Source IP address and port
+- **DADDR/DPT**: Destination IP address and port
+
+<Tip>
+  Ports are in host byte order. The source port is from `sk->__sk_common.skc_num`, and the destination port is converted from network byte order using `ntohs()`.
+</Tip>
+
+### Timestamps
+
+- **EventTime**: Nanosecond timestamp when the connection closed
+
+<Warning>
+  The timestamp is adjusted to account for system boot time, providing an absolute wall-clock time rather than a monotonic kernel time.
+</Warning>
+
+## IPv4 and IPv6 Support
+
+The tracer automatically handles both IPv4 and IPv6 connections:
+
+```c
+// From the BPF program
+if (family == AF_INET) {
+    event.family = AF_INET; 
+    event.saddr = sk->__sk_common.skc_rcv_saddr;
+    event.daddr = sk->__sk_common.skc_daddr;
+} else if (family == AF_INET6) {
+    event.family = AF_INET6;
+    bpf_probe_read(&event.saddr, sizeof(event.saddr), 
+                   sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
+    bpf_probe_read(&event.daddr, sizeof(event.daddr), 
+                   sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
+}
+```
+
+Addresses are automatically converted to string format in the event structure.
+
+## Netlink Diagnostics Integration
+
+The TCP tracer includes netlink socket diagnostics support for enriching connection data. This provides additional TCP metrics beyond what's available from the BPF hooks.
+
+<Note>
+  See `common.h` for the complete `anu_tcp_info` structure which mirrors the kernel's TCP info structure with fields like RTT, retransmissions, congestion window, and more.
+</Note>
+
+## Cleanup and Shutdown
+
+<Steps>
+  <Step title="Setup signal handler">
+    Register a signal handler for graceful shutdown:
+
+    ```c
+    void signalHandler(int signum) {
+        printf("Caught signal %d, cleaning up...\n", signum);
+        cleanup();
+        exit(signum);
+    }
+    
+    signal(SIGINT, signalHandler);
+    signal(SIGTERM, signalHandler);
+    ```
+  </Step>
+
+  <Step title="Call cleanup function">
+    The `cleanup()` function detaches all kprobes and releases BPF resources:
+
+    ```c
+    cleanup();
+    ```
+  </Step>
+
+  <Step title="Close library handle">
+    Close the dynamic library:
+
+    ```c
+    dlclose(handle);
+    ```
+  </Step>
+</Steps>
+
+## Example Output
+
+When running the TCP tracer, you'll see output like this:
+
+```
+---
+PID: 1177932
+UID: 1000
+Bytes received: 2988
+Bytes sent: 3301
+Segments out: 20
+Segments in: 18
+Command: ssh
+Source: 2001:aaa:fff:eee:ccc:a627:f45f:9c0c:58532
+Destination: 2601:xxx:yyy:zzz:aaa:db60:46cd:971c:22
+Event time: 1628184562000000000
+---
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Error Handling" icon="shield-check">
+    Always check return values from `dlsym()` and handle errors appropriately.
+  </Card>
+  <Card title="Signal Handling" icon="hand">
+    Implement proper signal handling to ensure cleanup is called before exit.
+  </Card>
+  <Card title="Event Processing" icon="gauge-high">
+    Events are queued internally. Process them promptly to avoid queue overflow.
+  </Card>
+  <Card title="Root Privileges" icon="key">
+    eBPF programs require root or `CAP_BPF` capabilities to load and attach.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Library not found">
+    Ensure the library is installed at `/opt/RealTimeKql/lib/libtcpEvent.so`. If installed elsewhere, update the `SOFILE` path.
+  </Accordion>
+  
+  <Accordion title="Permission denied">
+    eBPF requires elevated privileges. Run with `sudo` or grant `CAP_BPF` capability:
+    ```bash
+    sudo ./tcpEventTest
+    ```
+  </Accordion>
+  
+  <Accordion title="No events appearing">
+    Verify the probe attached successfully by checking kernel logs:
+    ```bash
+    sudo dmesg | tail
+    ```
+    Events are only generated when TCP connections close.
+  </Accordion>
+  
+  <Accordion title="Incomplete event data">
+    For short-lived connections, process information may be captured at different times. The tracer attempts to preserve the original process that established the connection.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="UDP Monitoring" icon="diagram-project" href="/guides/udp-monitoring">
+    Learn how to monitor UDP traffic
+  </Card>
+  <Card title="Building from Source" icon="hammer" href="/guides/building-from-source">
+    Build and customize the interceptor
+  </Card>
+  <Card title="Testing" icon="flask" href="/guides/testing">
+    Run tests and verify functionality
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/tcp/overview">
+    Detailed TCP API documentation
+  </Card>
+</CardGroup>

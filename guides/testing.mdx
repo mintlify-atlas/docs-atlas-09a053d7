@@ -1,0 +1,608 @@
+---
+title: Testing
+description: Build, run, and create tests for the eBPF Event Interceptor
+---
+
+The eBPF Event Interceptor includes test programs that demonstrate library usage and verify functionality. This guide covers building with tests, running the test programs, and understanding their output.
+
+## Building with Tests
+
+Tests are disabled by default. Enable them with the `SETUP_TESTS` CMake option:
+
+<Steps>
+  <Step title="Configure build with tests">
+    ```bash
+    cd build
+    cmake -DSETUP_TESTS=ON ../
+    ```
+    
+    You'll see confirmation in the output:
+    ```
+    Found BCC
+    tcp Interceptor
+    Setting up Tests
+    test tcp Interceptor
+    udp Interceptor
+    Setting up Tests for UDP Tracer
+    test udp Interceptor
+    ```
+  </Step>
+
+  <Step title="Build tests and libraries">
+    ```bash
+    make -j$(nproc --ignore=1)
+    ```
+    
+    Expected output:
+    ```
+    [ 25%] Built target tcpEvent
+    [ 50%] Built target tcpEventTest
+    [ 75%] Built target udpEvent
+    [100%] Built target udpEventTest
+    ```
+  </Step>
+
+  <Step title="Install tests and libraries">
+    ```bash
+    sudo make install
+    ```
+    
+    This installs:
+    - Libraries to `/opt/RealTimeKql/lib/`
+    - Test binaries to `/tmp/`
+    
+    ```
+    -- Installing: /opt/RealTimeKql/lib/libtcpEvent.so
+    -- Installing: /tmp/tcpEventTest
+    -- Installing: /opt/RealTimeKql/lib/libudpEvent.so
+    -- Installing: /tmp/udpEventTest
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Test binaries are installed to `/tmp` by default. They will be removed on system reboot unless you move them to a persistent location.
+</Note>
+
+## Running TCP Tests
+
+The TCP test program (`tcpEventTest`) monitors all TCP connections on the system.
+
+### Starting the Test
+
+```bash
+sudo /tmp/tcpEventTest
+```
+
+<Warning>
+  eBPF programs require root privileges or `CAP_BPF` capability to load and attach probes.
+</Warning>
+
+### Expected Output
+
+```
+TCP mainer Ver 1.03a PID: 1234
+dlopen: /opt/RealTimeKql/lib/libtcpEvent.so
+dlopen OK!
+About to AddProbe
+AddProbe done!
+Waiting on getStatus()..
+Tracing, press "CtrlC" to terminate..
+```
+
+Once a TCP connection closes, you'll see events:
+
+```
+                ---               
+ ---> In main, DEQD at 0x7ffc1234abcd
+ ---> PID: 1177932
+ ---> UID: 1000
+ ---> rx_b: 2988
+ ---> tx_b: 3301
+ ---> tcpi_segs_out: 20
+ ---> tcpi_segs_in: 18
+ ---> Command: ssh
+ ---> SADDR: 2001:aaa:fff:eee:ccc:a627:f45f:9c0c
+ ---> DADDR: 2601:xxx:yyy:zzz:aaa:db60:46cd:971c
+ ---> SPT: 58532
+ ---> DPT: 22
+ ---> EventTime: 1628184562000000000
+                ---
+```
+
+### Understanding TCP Test Output
+
+<CardGroup cols={2}>
+  <Card title="PID" icon="hashtag">
+    Process ID that owned the TCP connection
+  </Card>
+  <Card title="UID" icon="user">
+    User ID of the process
+  </Card>
+  <Card title="rx_b" icon="download">
+    Total bytes received on this connection
+  </Card>
+  <Card title="tx_b" icon="upload">
+    Total bytes transmitted (acknowledged)
+  </Card>
+  <Card title="tcpi_segs_out" icon="arrow-up">
+    Number of TCP segments sent
+  </Card>
+  <Card title="tcpi_segs_in" icon="arrow-down">
+    Number of TCP segments received
+  </Card>
+  <Card title="Command" icon="terminal">
+    Process name (e.g., ssh, curl, wget)
+  </Card>
+  <Card title="SPT/DPT" icon="network-wired">
+    Source and destination ports
+  </Card>
+</CardGroup>
+
+### Generating TCP Test Traffic
+
+To see events, generate TCP traffic:
+
+<CodeGroup>
+```bash HTTP Request
+# Make a simple HTTP request
+curl http://example.com
+```
+
+```bash SSH Connection
+# Establish SSH connection
+ssh user@remote-host
+# Close the connection to trigger event
+exit
+```
+
+```bash Custom TCP Connection
+# Using netcat
+echo "test" | nc example.com 80
+```
+</CodeGroup>
+
+<Tip>
+  TCP events are generated when connections **close** (transition to `TCP_CLOSE` state). Active connections won't produce events until they terminate.
+</Tip>
+
+## Running UDP Tests
+
+The UDP test program (`udpEventTest`) monitors all UDP traffic on the system.
+
+### Starting the Test
+
+```bash
+sudo /tmp/udpEventTest
+```
+
+### Expected Output
+
+```
+udp mainer ver 1.03b PID: 5678
+dlopen: /opt/RealTimeKql/lib/libudpEvent.so
+dlopen OK!
+About to AddProbe
+UDP Tracer Ver 1.04b with BCC 0.18.0
+AddProbe done!
+Attached: ip6_datagram_connect
+Attached: ip4_datagram_connect
+Attached: udp_recvmsg
+Attached: udp_sendmsg
+Attached: udp_destruct_sock
+Attached: udpv6_sendmsg
+Attached: udpv6_recvmsg
+Attached: kretprobe__udpv6_recvmsg
+--> bpf.open_perf_buffer OK
+Tracing, press "CtrlC" to terminate..
+```
+
+When UDP traffic occurs:
+
+```
+                ---               
+ ---> In main, DEQD at 0x7ffc9876dcba
+ ---> PID: 1180210
+ ---> UID: 1000
+ ---> family: 10
+ ---> rx_b: 0
+ ---> tx_b: 32
+ ---> rxPkts: 0
+ ---> txPkts: 1
+ ---> Command: udpTraffic.sh
+ ---> SADDR: 2001:xxx:f0:5e:aaa:a627:f45f:9c0c
+ ---> DADDR: 2001:xxx:f0:5e:bbb:8d6f:32ef:6180
+ ---> SPT: 42486
+ ---> DPT: 53
+ ---> EventTime: 1628185427077225859
+                ---
+```
+
+### Understanding UDP Test Output
+
+<CardGroup cols={2}>
+  <Card title="family" icon="globe">
+    Address family: 2 = IPv4, 10 = IPv6
+  </Card>
+  <Card title="rx_b / tx_b" icon="arrows-left-right">
+    Bytes received and transmitted
+  </Card>
+  <Card title="rxPkts / txPkts" icon="box">
+    Number of packets received and sent
+  </Card>
+  <Card title="DPT" icon="bullseye">
+    Destination port (53 = DNS, 123 = NTP, etc.)
+  </Card>
+</CardGroup>
+
+### Generating UDP Test Traffic
+
+<CodeGroup>
+```bash DNS Query
+# Generate DNS traffic
+dig example.com
+```
+
+```bash Ping
+# IPv4 UDP (ICMP)
+ping -c 3 8.8.8.8
+
+# IPv6 UDP
+ping6 -c 3 2001:4860:4860::8888
+```
+
+```bash Custom UDP
+# Using netcat for UDP
+echo "test" | nc -u 8.8.8.8 53
+```
+
+```bash NTP Query
+# Query NTP server
+ntpdate -q pool.ntp.org
+```
+</CodeGroup>
+
+<Note>
+  Unlike TCP, UDP events can be generated for active sockets, not just when they close. You may see multiple events for the same socket as traffic flows.
+</Note>
+
+## Test Program Structure
+
+Both test programs follow a similar pattern:
+
+### TCP Test (tcpEvent/Test/mainer.c)
+
+```c
+// 1. Load library
+void *handle = dlopen("/opt/RealTimeKql/lib/libtcpEvent.so", RTLD_LAZY);
+
+// 2. Resolve symbols
+void (*AddProbe)(const char *) = dlsym(handle, "AddProbe");
+struct tcp_event_t (*DequeuePerfEvent)() = dlsym(handle, "DequeuePerfEvent");
+void (*cleanup)() = dlsym(handle, "cleanup");
+unsigned (*getStatus)() = dlsym(handle, "getStatus");
+
+// 3. Setup signal handler
+signal(SIGINT, signalHandler);
+
+// 4. Attach probe with BPF program
+AddProbe(BPF_PROGRAM);
+
+// 5. Wait for initialization
+while (!getStatus()) { sleep(1); }
+
+// 6. Event loop
+while (1) {
+    struct tcp_event_t event = DequeuePerfEvent();
+    printEvent(&event);
+}
+```
+
+### UDP Test (udpEvent/Test/mainer.c)
+
+```c
+// Similar structure, but:
+// - AddProbe() takes no arguments (BPF program is embedded)
+// - Event structure is udp_event_t
+// - Includes packet counts (rxPkts, txPkts)
+
+void (*AddProbe)() = dlsym(handle, "AddProbe");
+AddProbe();  // No BPF program argument
+
+while (1) {
+    struct udp_event_t event = DequeuePerfEvent();
+    printEvent(&event);
+}
+```
+
+## Creating Custom Test Scenarios
+
+You can create custom test scenarios to validate specific behavior:
+
+### Testing TCP with Large Transfers
+
+```bash
+#!/bin/bash
+# Start TCP test in background
+sudo /tmp/tcpEventTest > tcp_results.log 2>&1 &
+TEST_PID=$!
+
+# Wait for initialization
+sleep 2
+
+# Download a large file to generate traffic
+wget https://releases.ubuntu.com/20.04/ubuntu-20.04.6-live-server-amd64.iso
+
+# Stop test
+sudo kill -INT $TEST_PID
+
+# Analyze results
+grep "rx_b" tcp_results.log
+```
+
+### Testing UDP with DNS Queries
+
+```bash
+#!/bin/bash
+# Start UDP test
+sudo /tmp/udpEventTest > udp_results.log 2>&1 &
+TEST_PID=$!
+
+sleep 2
+
+# Generate various DNS queries
+for domain in google.com microsoft.com github.com example.com; do
+    dig $domain
+    dig AAAA $domain  # IPv6 query
+    sleep 1
+done
+
+# Stop and analyze
+sudo kill -INT $TEST_PID
+grep "DPT: 53" udp_results.log | wc -l
+```
+
+### Testing Both Protocols
+
+```bash
+#!/bin/bash
+# Test both TCP and UDP simultaneously
+sudo /tmp/tcpEventTest > tcp.log 2>&1 &
+TCP_PID=$!
+
+sudo /tmp/udpEventTest > udp.log 2>&1 &
+UDP_PID=$!
+
+sleep 2
+
+# Mixed traffic
+curl http://example.com &  # TCP
+dig example.com &          # UDP
+wait
+
+# Cleanup
+sleep 2
+sudo kill -INT $TCP_PID $UDP_PID
+
+# Compare
+echo "TCP events:"
+grep -c "PID:" tcp.log
+echo "UDP events:"
+grep -c "PID:" udp.log
+```
+
+## Understanding Test Locations
+
+### Source Code Structure
+
+```
+eBPF-Event-Interceptor/
+├── tcpEvent/
+│   ├── event.cc          # TCP tracer implementation
+│   ├── event.h           # TCP API header
+│   ├── common.h          # TCP structures
+│   ├── CMakeLists.txt
+│   └── Test/
+│       ├── mainer.c      # TCP test program
+│       └── CMakeLists.txt
+├── udpEvent/
+│   ├── udpTracer.cc      # UDP tracer implementation
+│   ├── common.h          # UDP structures
+│   ├── CMakeLists.txt
+│   └── Test/
+│       ├── mainer.c      # UDP test program
+│       └── CMakeLists.txt
+└── build/
+    ├── tcpEvent/
+    │   └── Test/
+    │       └── tcpEventTest  # Built TCP test
+    └── udpEvent/
+        └── Test/
+            └── udpEventTest  # Built UDP test
+```
+
+### Installation Locations
+
+After `make install`:
+
+- **Libraries**: `/opt/RealTimeKql/lib/`
+  - `libtcpEvent.so`
+  - `libudpEvent.so`
+  
+- **Tests**: `/tmp/`
+  - `tcpEventTest`
+  - `udpEventTest`
+
+<Warning>
+  Test binaries in `/tmp` are deleted on reboot. Copy them to a permanent location if needed:
+  ```bash
+  sudo cp /tmp/{tcp,udp}EventTest /usr/local/bin/
+  ```
+</Warning>
+
+## Troubleshooting Tests
+
+<AccordionGroup>
+  <Accordion title="Test binary not found">
+    Error:
+    ```
+    bash: /tmp/tcpEventTest: No such file or directory
+    ```
+    
+    **Solution**: Rebuild with tests enabled:
+    ```bash
+    cd build
+    cmake -DSETUP_TESTS=ON ../
+    make -j$(nproc --ignore=1)
+    sudo make install
+    ```
+  </Accordion>
+  
+  <Accordion title="Permission denied">
+    Error:
+    ```
+    Operation not permitted
+    ```
+    
+    **Solution**: Run with sudo:
+    ```bash
+    sudo /tmp/tcpEventTest
+    ```
+  </Accordion>
+  
+  <Accordion title="Library not found">
+    Error:
+    ```
+    Failed dlopen
+    /opt/RealTimeKql/lib/libtcpEvent.so: cannot open shared object file
+    ```
+    
+    **Solution**: Install libraries first:
+    ```bash
+    sudo make install
+    ```
+    
+    Or check library path:
+    ```bash
+    ls -l /opt/RealTimeKql/lib/
+    ```
+  </Accordion>
+  
+  <Accordion title="No events appearing">
+    **For TCP**:
+    - Events only appear when connections close
+    - Generate test traffic: `curl http://example.com`
+    - Check if processes are creating connections: `ss -t`
+    
+    **For UDP**:
+    - Events appear for send/receive operations
+    - Generate test traffic: `dig example.com`
+    - Try IPv6 traffic: `dig AAAA example.com`
+  </Accordion>
+  
+  <Accordion title="Probe attachment failed">
+    Error in output:
+    ```
+    Failed to attach kprobe: ...
+    ```
+    
+    **Solution**: 
+    - Check kernel version: `uname -r`
+    - Ensure kernel headers are installed: `sudo apt install linux-headers-$(uname -r)`
+    - Verify BCC is working: `sudo python3 -c "from bcc import BPF"`
+  </Accordion>
+  
+  <Accordion title="Memory leaks or crashes">
+    If tests crash or leak memory:
+    
+    ```bash
+    # Run with valgrind
+    sudo valgrind --leak-check=full /tmp/tcpEventTest
+    ```
+    
+    Check kernel logs:
+    ```bash
+    sudo dmesg | tail -50
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Automated Testing
+
+Create an automated test suite:
+
+```bash
+#!/bin/bash
+# test_suite.sh
+
+set -e
+
+echo "=== eBPF Event Interceptor Test Suite ==="
+
+# Build with tests
+echo "Building with tests..."
+cd build
+cmake -DSETUP_TESTS=ON ../ > /dev/null
+make -j$(nproc --ignore=1) > /dev/null
+sudo make install > /dev/null
+
+# Test TCP
+echo "Testing TCP tracer..."
+sudo timeout 10 /tmp/tcpEventTest > /tmp/tcp_test.log 2>&1 &
+TCP_PID=$!
+sleep 2
+curl -s http://example.com > /dev/null
+sleep 3
+sudo kill -INT $TCP_PID 2>/dev/null || true
+wait $TCP_PID 2>/dev/null || true
+
+if grep -q "PID:" /tmp/tcp_test.log; then
+    echo "✓ TCP test passed"
+else
+    echo "✗ TCP test failed"
+    exit 1
+fi
+
+# Test UDP
+echo "Testing UDP tracer..."
+sudo timeout 10 /tmp/udpEventTest > /tmp/udp_test.log 2>&1 &
+UDP_PID=$!
+sleep 2
+dig example.com > /dev/null
+sleep 3
+sudo kill -INT $UDP_PID 2>/dev/null || true
+wait $UDP_PID 2>/dev/null || true
+
+if grep -q "PID:" /tmp/udp_test.log; then
+    echo "✓ UDP test passed"
+else
+    echo "✗ UDP test failed"
+    exit 1
+fi
+
+echo "=== All tests passed ==="
+```
+
+Run it:
+
+```bash
+chmod +x test_suite.sh
+./test_suite.sh
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="TCP Monitoring" icon="network-wired" href="/guides/tcp-monitoring">
+    Deep dive into TCP monitoring features
+  </Card>
+  <Card title="UDP Monitoring" icon="diagram-project" href="/guides/udp-monitoring">
+    Explore UDP monitoring capabilities
+  </Card>
+  <Card title="Building from Source" icon="hammer" href="/guides/building-from-source">
+    Customize and rebuild the interceptor
+  </Card>
+  <Card title="TCP API Reference" icon="code" href="/api/tcp/overview">
+    Complete TCP API documentation
+  </Card>
+</CardGroup>

@@ -1,0 +1,820 @@
+---
+title: "TCP Event API Data Structures"
+description: "Struct definitions for TCP event data and statistics"
+---
+
+## Overview
+
+The TCP Event API uses several data structures to represent network events and TCP statistics. These structures are defined in `common.h` and use `#pragma pack(push, 1)` to ensure consistent memory layout.
+
+---
+
+## event_t (Internal)
+
+Internal representation of TCP events as received from the BPF probe. This structure is not directly exposed to consumers but is transformed into `tcp_event_t`.
+
+```c
+#pragma pack(push, 1)
+struct event_t {
+    uint64_t EventTime;
+    uint64_t ts_us;
+    uint32_t pid;
+    uint32_t UserId;
+    unsigned __int128 saddr;
+    unsigned __int128 daddr;
+    uint64_t rx_b;
+    uint64_t tx_b;
+    uint32_t tcpi_segs_out;
+    uint32_t tcpi_segs_in;
+    uint64_t span_us;
+    uint16_t family;
+    uint16_t SPT;
+    uint16_t DPT;
+    char task[128];
+};
+#pragma pack(pop)
+```
+
+<ResponseField name="EventTime" type="uint64_t">
+  Event timestamp in nanoseconds (boot-relative, adjusted to epoch before delivery to consumer).
+  
+  **Example**: `1234567890123456789` (nanoseconds since boot)
+</ResponseField>
+
+<ResponseField name="ts_us" type="uint64_t">
+  Timestamp in microseconds (internal use).
+</ResponseField>
+
+<ResponseField name="pid" type="uint32_t">
+  Process ID of the process that owns the TCP connection.
+  
+  **Example**: `12345`
+</ResponseField>
+
+<ResponseField name="UserId" type="uint32_t">
+  User ID (UID) of the process owner.
+  
+  **Example**: `1000`
+</ResponseField>
+
+<ResponseField name="saddr" type="unsigned __int128">
+  Source IP address in binary form (128-bit to accommodate IPv6).
+  - For IPv4: Only lower 32 bits are used
+  - For IPv6: Full 128 bits contain the address
+</ResponseField>
+
+<ResponseField name="daddr" type="unsigned __int128">
+  Destination IP address in binary form (128-bit to accommodate IPv6).
+  - For IPv4: Only lower 32 bits are used
+  - For IPv6: Full 128 bits contain the address
+</ResponseField>
+
+<ResponseField name="rx_b" type="uint64_t">
+  Total bytes received on this TCP connection.
+  
+  **Example**: `1048576` (1 MB)
+</ResponseField>
+
+<ResponseField name="tx_b" type="uint64_t">
+  Total bytes transmitted on this TCP connection.
+  
+  **Example**: `524288` (512 KB)
+</ResponseField>
+
+<ResponseField name="tcpi_segs_out" type="uint32_t">
+  Total TCP segments sent (RFC4898 tcpEStatsPerfSegsOut).
+  
+  **Example**: `1024`
+</ResponseField>
+
+<ResponseField name="tcpi_segs_in" type="uint32_t">
+  Total TCP segments received (RFC4898 tcpEStatsPerfSegsIn).
+  
+  **Example**: `2048`
+</ResponseField>
+
+<ResponseField name="span_us" type="uint64_t">
+  Time span in microseconds (internal use).
+</ResponseField>
+
+<ResponseField name="family" type="uint16_t">
+  Address family indicator:
+  - `AF_INET` (2): IPv4
+  - `AF_INET6` (10): IPv6
+  
+  **Example**: `2` (IPv4)
+</ResponseField>
+
+<ResponseField name="SPT" type="uint16_t">
+  Source port number.
+  
+  **Example**: `443` (HTTPS)
+</ResponseField>
+
+<ResponseField name="DPT" type="uint16_t">
+  Destination port number.
+  
+  **Example**: `52341` (ephemeral client port)
+</ResponseField>
+
+<ResponseField name="task" type="char[128]">
+  Process command name (null-terminated string, max 128 bytes including null).
+  
+  **Example**: `"nginx"`, `"python3"`
+</ResponseField>
+
+---
+
+## tcp_event_t (Consumer-Facing)
+
+The structure returned by `DequeuePerfEvent()` to application code. This is the primary data structure for consuming TCP events.
+
+```c
+#pragma pack(push, 1)
+struct tcp_event_t {
+    uint64_t EventTime;
+    uint32_t pid;
+    uint32_t UserId;
+    uint64_t rx_b;
+    uint64_t tx_b;
+    uint32_t tcpi_segs_out;
+    uint32_t tcpi_segs_in;
+    uint16_t family;
+    uint16_t SPT;
+    uint16_t DPT;
+    char task[128];
+    char SADDR[128];
+    char DADDR[128];
+};
+#pragma pack(pop)
+```
+
+<ResponseField name="EventTime" type="uint64_t">
+  Event timestamp in nanoseconds since Unix epoch (adjusted from boot-relative time).
+  
+  **Example**: `1678901234567890123` (nanoseconds since Jan 1, 1970)
+  
+  **Conversion**: To seconds: `EventTime / 1000000000`
+</ResponseField>
+
+<ResponseField name="pid" type="uint32_t">
+  Process ID of the process that owns the TCP connection.
+  
+  **Example**: `12345`
+</ResponseField>
+
+<ResponseField name="UserId" type="uint32_t">
+  User ID (UID) of the process owner.
+  
+  **Example**: `1000` (regular user), `0` (root)
+</ResponseField>
+
+<ResponseField name="rx_b" type="uint64_t">
+  Total bytes received on this TCP connection (cumulative).
+  
+  **Example**: `1048576` (1 MiB)
+</ResponseField>
+
+<ResponseField name="tx_b" type="uint64_t">
+  Total bytes transmitted on this TCP connection (cumulative).
+  
+  **Example**: `524288` (512 KiB)
+</ResponseField>
+
+<ResponseField name="tcpi_segs_out" type="uint32_t">
+  Total TCP segments sent (RFC4898 tcpEStatsPerfSegsOut).
+  
+  **Example**: `1024`
+</ResponseField>
+
+<ResponseField name="tcpi_segs_in" type="uint32_t">
+  Total TCP segments received (RFC4898 tcpEStatsPerfSegsIn).
+  
+  **Example**: `2048`
+</ResponseField>
+
+<ResponseField name="family" type="uint16_t">
+  Address family:
+  - `AF_INET` (2): IPv4 connection
+  - `AF_INET6` (10): IPv6 connection
+  
+  **Example**: `2`
+</ResponseField>
+
+<ResponseField name="SPT" type="uint16_t">
+  Source port number (host byte order).
+  
+  **Example**: `443`, `80`, `22`
+</ResponseField>
+
+<ResponseField name="DPT" type="uint16_t">
+  Destination port number (host byte order).
+  
+  **Example**: `52341` (ephemeral port)
+</ResponseField>
+
+<ResponseField name="task" type="char[128]">
+  Process command name (null-terminated string).
+  
+  **Example**: `"nginx"`, `"postgres"`, `"python3"`
+</ResponseField>
+
+<ResponseField name="SADDR" type="char[128]">
+  Source IP address as a human-readable string.
+  - IPv4: Dotted-quad notation
+  - IPv6: Colon-hexadecimal notation
+  
+  **Examples**: 
+  - `"192.168.1.100"` (IPv4)
+  - `"2001:db8::1"` (IPv6)
+</ResponseField>
+
+<ResponseField name="DADDR" type="char[128]">
+  Destination IP address as a human-readable string.
+  - IPv4: Dotted-quad notation
+  - IPv6: Colon-hexadecimal notation
+  
+  **Examples**:
+  - `"10.0.0.5"` (IPv4)
+  - `"fe80::a00:27ff:fe4e:66a1"` (IPv6 link-local)
+</ResponseField>
+
+### Usage Example
+
+```c
+struct tcp_event_t event = DequeuePerfEvent();
+
+printf("TCP Connection Event\n");
+printf("  Time: %lu ns\n", event.EventTime);
+printf("  Process: %s (PID %u, UID %u)\n", event.task, event.pid, event.UserId);
+printf("  Family: %s\n", event.family == AF_INET ? "IPv4" : "IPv6");
+printf("  Connection: %s:%u -> %s:%u\n", 
+       event.SADDR, event.SPT, event.DADDR, event.DPT);
+printf("  Traffic:\n");
+printf("    TX: %lu bytes in %u segments\n", event.tx_b, event.tcpi_segs_out);
+printf("    RX: %lu bytes in %u segments\n", event.rx_b, event.tcpi_segs_in);
+```
+
+**Output**:
+```
+TCP Connection Event
+  Time: 1678901234567890123 ns
+  Process: nginx (PID 1234, UID 33)
+  Family: IPv4
+  Connection: 192.168.1.10:443 -> 192.168.1.100:52341
+  Traffic:
+    TX: 524288 bytes in 512 segments
+    RX: 1048576 bytes in 1024 segments
+```
+
+---
+
+## anu_tcp_info
+
+Comprehensive TCP connection statistics structure obtained via netlink socket diagnostics. Contains extensive metrics about TCP connection state, performance, and behavior.
+
+```c
+struct anu_tcp_info {
+    uint8_t tcpi_state;
+    uint8_t tcpi_ca_state;
+    uint8_t tcpi_retransmits;
+    uint8_t tcpi_probes;
+    uint8_t tcpi_backoff;
+    uint8_t tcpi_options;
+    uint8_t tcpi_snd_wscale:4, tcpi_rcv_wscale:4;
+    uint8_t tcpi_delivery_rate_app_limited:1, tcpi_fastopen_client_fail:2;
+    
+    uint32_t tcpi_rto;
+    uint32_t tcpi_ato;
+    uint32_t tcpi_snd_mss;
+    uint32_t tcpi_rcv_mss;
+    
+    uint32_t tcpi_unacked;
+    uint32_t tcpi_sacked;
+    uint32_t tcpi_lost;
+    uint32_t tcpi_retrans;
+    uint32_t tcpi_fackets;
+    
+    uint32_t tcpi_last_data_sent;
+    uint32_t tcpi_last_ack_sent;
+    uint32_t tcpi_last_data_recv;
+    uint32_t tcpi_last_ack_recv;
+    
+    uint32_t tcpi_pmtu;
+    uint32_t tcpi_rcv_ssthresh;
+    uint32_t tcpi_rtt;
+    uint32_t tcpi_rttvar;
+    uint32_t tcpi_snd_ssthresh;
+    uint32_t tcpi_snd_cwnd;
+    uint32_t tcpi_advmss;
+    uint32_t tcpi_reordering;
+    
+    uint32_t tcpi_rcv_rtt;
+    uint32_t tcpi_rcv_space;
+    uint32_t tcpi_total_retrans;
+    
+    uint64_t tcpi_pacing_rate;
+    uint64_t tcpi_max_pacing_rate;
+    uint64_t tcpi_bytes_acked;
+    uint64_t tcpi_bytes_received;
+    uint32_t tcpi_segs_out;
+    uint32_t tcpi_segs_in;
+    
+    uint32_t tcpi_notsent_bytes;
+    uint32_t tcpi_min_rtt;
+    uint32_t tcpi_data_segs_in;
+    uint32_t tcpi_data_segs_out;
+    
+    uint64_t tcpi_delivery_rate;
+    uint64_t tcpi_busy_time;
+    uint64_t tcpi_rwnd_limited;
+    uint64_t tcpi_sndbuf_limited;
+    
+    uint32_t tcpi_delivered;
+    uint32_t tcpi_delivered_ce;
+    
+    uint64_t tcpi_bytes_sent;
+    uint64_t tcpi_bytes_retrans;
+    uint32_t tcpi_dsack_dups;
+    uint32_t tcpi_reord_seen;
+    uint32_t tcpi_rcv_ooopack;
+    uint32_t tcpi_snd_wnd;
+};
+```
+
+<Expandable title="Connection State Fields">
+  <ResponseField name="tcpi_state" type="uint8_t">
+    Current TCP state (see TCP State Enum below).
+    
+    **Example**: `1` (TCP_ESTABLISHED)
+  </ResponseField>
+
+  <ResponseField name="tcpi_ca_state" type="uint8_t">
+    Congestion avoidance state.
+    
+    **Example**: `0` (TCP_CA_Open)
+  </ResponseField>
+
+  <ResponseField name="tcpi_retransmits" type="uint8_t">
+    Number of unrecovered retransmit timeouts.
+    
+    **Example**: `0` (no retransmits)
+  </ResponseField>
+
+  <ResponseField name="tcpi_probes" type="uint8_t">
+    Number of unanswered keepalive probes.
+    
+    **Example**: `0`
+  </ResponseField>
+
+  <ResponseField name="tcpi_backoff" type="uint8_t">
+    Backoff for retransmission timer.
+    
+    **Example**: `0`
+  </ResponseField>
+
+  <ResponseField name="tcpi_options" type="uint8_t">
+    Enabled TCP options (bitmask).
+    
+    **Example**: `7` (timestamps + SACK + window scaling)
+  </ResponseField>
+
+  <ResponseField name="tcpi_snd_wscale" type="uint8_t (4 bits)">
+    Send window scaling factor.
+    
+    **Example**: `7` (scale by 2^7 = 128)
+  </ResponseField>
+
+  <ResponseField name="tcpi_rcv_wscale" type="uint8_t (4 bits)">
+    Receive window scaling factor.
+    
+    **Example**: `7`
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Timing and Timeouts">
+  <ResponseField name="tcpi_rto" type="uint32_t">
+    Retransmission timeout in microseconds.
+    
+    **Example**: `200000` (200 ms)
+  </ResponseField>
+
+  <ResponseField name="tcpi_ato" type="uint32_t">
+    Delayed ACK timeout in microseconds.
+    
+    **Example**: `40000` (40 ms)
+  </ResponseField>
+
+  <ResponseField name="tcpi_last_data_sent" type="uint32_t">
+    Milliseconds since last data segment was sent.
+    
+    **Example**: `150` (150 ms ago)
+  </ResponseField>
+
+  <ResponseField name="tcpi_last_ack_sent" type="uint32_t">
+    Milliseconds since last ACK was sent (not reliably tracked).
+    
+    **Example**: `0`
+  </ResponseField>
+
+  <ResponseField name="tcpi_last_data_recv" type="uint32_t">
+    Milliseconds since last data segment was received.
+    
+    **Example**: `50` (50 ms ago)
+  </ResponseField>
+
+  <ResponseField name="tcpi_last_ack_recv" type="uint32_t">
+    Milliseconds since last ACK was received.
+    
+    **Example**: `50`
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Window and MSS">
+  <ResponseField name="tcpi_snd_mss" type="uint32_t">
+    Send maximum segment size in bytes.
+    
+    **Example**: `1448` (typical for Ethernet)
+  </ResponseField>
+
+  <ResponseField name="tcpi_rcv_mss" type="uint32_t">
+    Receive maximum segment size in bytes.
+    
+    **Example**: `1448`
+  </ResponseField>
+
+  <ResponseField name="tcpi_advmss" type="uint32_t">
+    Advertised MSS.
+    
+    **Example**: `1460`
+  </ResponseField>
+
+  <ResponseField name="tcpi_snd_wnd" type="uint32_t">
+    Peer's advertised receive window (bytes after scaling).
+    
+    **Example**: `65536` (64 KB)
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Packet Loss and Recovery">
+  <ResponseField name="tcpi_unacked" type="uint32_t">
+    Packets sent but not yet acknowledged.
+    
+    **Example**: `5`
+  </ResponseField>
+
+  <ResponseField name="tcpi_sacked" type="uint32_t">
+    Packets selectively acknowledged.
+    
+    **Example**: `0`
+  </ResponseField>
+
+  <ResponseField name="tcpi_lost" type="uint32_t">
+    Lost packets.
+    
+    **Example**: `0`
+  </ResponseField>
+
+  <ResponseField name="tcpi_retrans" type="uint32_t">
+    Retransmitted packets.
+    
+    **Example**: `0`
+  </ResponseField>
+
+  <ResponseField name="tcpi_fackets" type="uint32_t">
+    Forward acknowledgments (deprecated).
+  </ResponseField>
+
+  <ResponseField name="tcpi_total_retrans" type="uint32_t">
+    Total retransmits for entire connection.
+    
+    **Example**: `12`
+  </ResponseField>
+
+  <ResponseField name="tcpi_bytes_retrans" type="uint64_t">
+    RFC4898 tcpEStatsPerfOctetsRetrans - total bytes retransmitted.
+    
+    **Example**: `17376` (12 * 1448 bytes)
+  </ResponseField>
+
+  <ResponseField name="tcpi_dsack_dups" type="uint32_t">
+    RFC4898 tcpEStatsStackDSACKDups - duplicate SACKs received.
+    
+    **Example**: `0`
+  </ResponseField>
+
+  <ResponseField name="tcpi_reord_seen" type="uint32_t">
+    Reordering events seen.
+    
+    **Example**: `3`
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Round-Trip Time">
+  <ResponseField name="tcpi_rtt" type="uint32_t">
+    Smoothed round-trip time in microseconds.
+    
+    **Example**: `25000` (25 ms)
+  </ResponseField>
+
+  <ResponseField name="tcpi_rttvar" type="uint32_t">
+    RTT variance in microseconds.
+    
+    **Example**: `5000` (5 ms)
+  </ResponseField>
+
+  <ResponseField name="tcpi_min_rtt" type="uint32_t">
+    Minimum RTT observed in microseconds.
+    
+    **Example**: `20000` (20 ms)
+  </ResponseField>
+
+  <ResponseField name="tcpi_rcv_rtt" type="uint32_t">
+    Receiver-side RTT estimate in microseconds.
+    
+    **Example**: `25000`
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Congestion Control">
+  <ResponseField name="tcpi_snd_ssthresh" type="uint32_t">
+    Slow start threshold.
+    
+    **Example**: `20` (20 segments)
+  </ResponseField>
+
+  <ResponseField name="tcpi_snd_cwnd" type="uint32_t">
+    Congestion window in segments.
+    
+    **Example**: `10`
+  </ResponseField>
+
+  <ResponseField name="tcpi_reordering" type="uint32_t">
+    Reordering metric.
+    
+    **Example**: `3`
+  </ResponseField>
+
+  <ResponseField name="tcpi_rcv_ssthresh" type="uint32_t">
+    Receiver slow start threshold.
+    
+    **Example**: `32768`
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Path MTU">
+  <ResponseField name="tcpi_pmtu" type="uint32_t">
+    Path MTU in bytes.
+    
+    **Example**: `1500` (Ethernet)
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Receive Buffer">
+  <ResponseField name="tcpi_rcv_space" type="uint32_t">
+    Receive buffer space.
+    
+    **Example**: `131072` (128 KB)
+  </ResponseField>
+
+  <ResponseField name="tcpi_rcv_ooopack" type="uint32_t">
+    Out-of-order packets received.
+    
+    **Example**: `5`
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Throughput and Data Volume (RFC4898)">
+  <ResponseField name="tcpi_bytes_sent" type="uint64_t">
+    RFC4898 tcpEStatsPerfHCDataOctetsOut - total data bytes sent (excluding headers and retransmits).
+    
+    **Example**: `10485760` (10 MB)
+  </ResponseField>
+
+  <ResponseField name="tcpi_bytes_received" type="uint64_t">
+    RFC4898 tcpEStatsAppHCThruOctetsReceived - total data bytes received.
+    
+    **Example**: `20971520` (20 MB)
+  </ResponseField>
+
+  <ResponseField name="tcpi_bytes_acked" type="uint64_t">
+    RFC4898 tcpEStatsAppHCThruOctetsAcked - total bytes acknowledged.
+    
+    **Example**: `10485760`
+  </ResponseField>
+
+  <ResponseField name="tcpi_segs_out" type="uint32_t">
+    RFC4898 tcpEStatsPerfSegsOut - total segments sent.
+    
+    **Example**: `7240`
+  </ResponseField>
+
+  <ResponseField name="tcpi_segs_in" type="uint32_t">
+    RFC4898 tcpEStatsPerfSegsIn - total segments received.
+    
+    **Example**: `14480`
+  </ResponseField>
+
+  <ResponseField name="tcpi_data_segs_in" type="uint32_t">
+    RFC4898 tcpEStatsDataSegsIn - data segments received.
+    
+    **Example**: `14480`
+  </ResponseField>
+
+  <ResponseField name="tcpi_data_segs_out" type="uint32_t">
+    RFC4898 tcpEStatsDataSegsOut - data segments sent.
+    
+    **Example**: `7240`
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Pacing and Rate Limiting">
+  <ResponseField name="tcpi_pacing_rate" type="uint64_t">
+    Current pacing rate in bytes per second.
+    
+    **Example**: `12500000` (12.5 MB/s)
+  </ResponseField>
+
+  <ResponseField name="tcpi_max_pacing_rate" type="uint64_t">
+    Maximum pacing rate in bytes per second.
+    
+    **Example**: `104857600` (100 MB/s)
+  </ResponseField>
+
+  <ResponseField name="tcpi_delivery_rate" type="uint64_t">
+    Delivery rate in bytes per second.
+    
+    **Example**: `11000000` (11 MB/s)
+  </ResponseField>
+
+  <ResponseField name="tcpi_delivery_rate_app_limited" type="uint8_t (1 bit)">
+    Delivery rate limited by application (not network).
+    
+    **Example**: `0` (network-limited)
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Send Queue and Buffering">
+  <ResponseField name="tcpi_notsent_bytes" type="uint32_t">
+    Bytes in send queue not yet sent.
+    
+    **Example**: `2896` (2 segments)
+  </ResponseField>
+
+  <ResponseField name="tcpi_busy_time" type="uint64_t">
+    Time in microseconds spent actively sending data.
+    
+    **Example**: `850000000` (850 seconds)
+  </ResponseField>
+
+  <ResponseField name="tcpi_rwnd_limited" type="uint64_t">
+    Time in microseconds limited by receive window.
+    
+    **Example**: `5000000" (5 seconds)
+  </ResponseField>
+
+  <ResponseField name="tcpi_sndbuf_limited" type="uint64_t">
+    Time in microseconds limited by send buffer.
+    
+    **Example**: `1000000" (1 second)
+  </ResponseField>
+</Expandable>
+
+<Expandable title="TCP Fast Open">
+  <ResponseField name="tcpi_fastopen_client_fail" type="uint8_t (2 bits)">
+    TCP Fast Open client failure reason.
+    
+    **Example**: `0` (no failure)
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Delivery Metrics">
+  <ResponseField name="tcpi_delivered" type="uint32_t">
+    Packets delivered to receiver.
+    
+    **Example**: `14480`
+  </ResponseField>
+
+  <ResponseField name="tcpi_delivered_ce" type="uint32_t">
+    Packets delivered with congestion experienced (ECN).
+    
+    **Example**: `0`
+  </ResponseField>
+</Expandable>
+
+### Usage Note
+
+<Info>
+  The `anu_tcp_info` structure is populated from netlink socket diagnostics (INET_DIAG_INFO). Fields like `tcpi_bytes_sent` and `tcpi_bytes_received` are extracted and copied to the `tcp_event_t.tx_b` and `tcp_event_t.rx_b` fields respectively.
+</Info>
+
+---
+
+## TCP State Enum
+
+TCP connection states as defined in the Linux kernel.
+
+```c
+enum {
+    TCP_ESTABLISHED = 1,
+    TCP_SYN_SENT,
+    TCP_SYN_RECV,
+    TCP_FIN_WAIT1,
+    TCP_FIN_WAIT2,
+    TCP_TIME_WAIT,
+    TCP_CLOSE,
+    TCP_CLOSE_WAIT,
+    TCP_LAST_ACK,
+    TCP_LISTEN,
+    TCP_CLOSING,
+    TCP_NEW_SYN_RECV,
+    TCP_MAX_STATES
+};
+```
+
+<ResponseField name="TCP_ESTABLISHED" type="1">
+  Connection is established and data can flow.
+</ResponseField>
+
+<ResponseField name="TCP_SYN_SENT" type="2">
+  Client sent SYN, waiting for SYN-ACK.
+</ResponseField>
+
+<ResponseField name="TCP_SYN_RECV" type="3">
+  Server received SYN, sent SYN-ACK, waiting for ACK.
+</ResponseField>
+
+<ResponseField name="TCP_FIN_WAIT1" type="4">
+  Connection closing, FIN sent, waiting for ACK.
+</ResponseField>
+
+<ResponseField name="TCP_FIN_WAIT2" type="5">
+  FIN acknowledged, waiting for peer's FIN.
+</ResponseField>
+
+<ResponseField name="TCP_TIME_WAIT" type="6">
+  Connection closed, waiting for delayed packets.
+</ResponseField>
+
+<ResponseField name="TCP_CLOSE" type="7">
+  Connection is closed.
+</ResponseField>
+
+<ResponseField name="TCP_CLOSE_WAIT" type="8">
+  Peer closed connection, waiting for local close.
+</ResponseField>
+
+<ResponseField name="TCP_LAST_ACK" type="9">
+  Waiting for final ACK after sending FIN.
+</ResponseField>
+
+<ResponseField name="TCP_LISTEN" type="10">
+  Socket is listening for incoming connections.
+</ResponseField>
+
+<ResponseField name="TCP_CLOSING" type="11">
+  Both sides closing simultaneously.
+</ResponseField>
+
+<ResponseField name="TCP_NEW_SYN_RECV" type="12">
+  New SYN received (SYN cookies).
+</ResponseField>
+
+<ResponseField name="TCP_MAX_STATES" type="13">
+  Sentinel value (total number of states).
+</ResponseField>
+
+### State Filtering
+
+The library monitors TCP connections in specific states. The netlink probe filters for:
+
+```c
+connRequest.idiag_states = TCPF_ALL & ~((1 << TCP_SYN_RECV) | (1 << TCP_TIME_WAIT) | (1 << TCP_CLOSE));
+```
+
+**Monitored States**: All except SYN_RECV, TIME_WAIT, and CLOSE
+
+**Rationale**: Focuses on active connections with meaningful data transfer, excluding transient handshake and teardown states.
+
+---
+
+## Memory Layout
+
+All structures use `#pragma pack(push, 1)` to ensure no padding:
+
+```c
+#pragma pack(push, 1)
+struct tcp_event_t {
+    // Fields...
+};
+#pragma pack(pop)
+```
+
+This guarantees consistent memory layout across different compilers and architectures, critical for:
+- Binary compatibility with BPF programs
+- Interoperability with kernel netlink structures
+- Serialization/deserialization
+
+<Warning>
+  Due to packed structures, accessing fields may be slower on architectures requiring aligned access. This is acceptable for the relatively low frequency of TCP state change events.
+</Warning>

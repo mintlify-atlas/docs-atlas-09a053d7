@@ -1,0 +1,260 @@
+---
+title: Installation
+description: Install BCC dependencies and build eBPF Event Interceptor from source
+---
+
+## Prerequisites
+
+### BPF Compiler Collection (BCC)
+
+eBPF Event Interceptor requires the BCC framework to compile and run eBPF programs. The CMake build system can automatically set up BCC on Ubuntu, or you can install it manually.
+
+<Tabs>
+  <Tab title="Ubuntu 20.04 / 18.04">
+    The included CMake configuration will automatically install BCC if not found:
+
+    ```bash
+    # BCC will be installed automatically during the build process
+    # No manual installation required
+    ```
+
+    If you prefer to install BCC manually:
+
+    ```bash
+    sudo apt-get update
+    sudo apt-get install -y bpfcc-tools linux-headers-$(uname -r)
+    ```
+  </Tab>
+  <Tab title="Other Distributions">
+    For other Linux distributions, follow the [official BCC installation guide](https://github.com/iovisor/bcc/blob/master/INSTALL.md).
+
+    <Note>
+    Ensure you install both the BCC runtime library and development headers.
+    </Note>
+  </Tab>
+</Tabs>
+
+### Build Dependencies
+
+Install the required build tools:
+
+```bash
+sudo apt install -y build-essential cmake
+```
+
+<Note>
+**Minimum versions:**
+- CMake 3.10 or later
+- GCC with C++11 support
+</Note>
+
+## Build and Install
+
+<Steps>
+  <Step title="Clone the repository">
+    Download the eBPF Event Interceptor source code:
+
+    ```bash
+    git clone https://github.com/microsoft/eBPF-Event-Interceptor.git
+    cd eBPF-Event-Interceptor
+    ```
+  </Step>
+
+  <Step title="Create build directory">
+    Set up a dedicated build directory:
+
+    ```bash
+    mkdir build && cd build
+    ```
+  </Step>
+
+  <Step title="Configure with CMake">
+    Generate build files. Add `-DSETUP_TESTS=ON` to build test executables:
+
+    <CodeGroup>
+    ```bash Standard Build
+    cmake ../
+    ```
+
+    ```bash With Tests
+    cmake -DSETUP_TESTS=ON ../
+    ```
+    </CodeGroup>
+
+    **Expected output:**
+    ```
+    Found BCC
+    tcp Interceptor
+    udp Interceptor
+    -- Configuring done
+    -- Generating done
+    -- Build files have been written to: .../build
+    ```
+
+    <Note>
+    If BCC is not found, the build system will automatically run installation scripts for Ubuntu. This requires an internet connection and may take several minutes.
+    </Note>
+  </Step>
+
+  <Step title="Compile the libraries">
+    Build using all available CPU cores:
+
+    ```bash
+    make -j$(nproc --ignore=1)
+    ```
+
+    This compiles:
+    - `libtcpEvent.so` - TCP event interceptor library
+    - `libudpEvent.so` - UDP event interceptor library
+    - Test executables (if `SETUP_TESTS=ON`)
+
+    **Build output:**
+    ```
+    [ 50%] Built target tcpEvent
+    [ 75%] Built target udpEvent
+    [100%] Built target tcpEventTest
+    [100%] Built target udpEventTest
+    ```
+  </Step>
+
+  <Step title="Install the libraries">
+    Install the compiled libraries to the system:
+
+    ```bash
+    sudo make install
+    ```
+
+    **Installation paths:**
+    - Libraries: `/opt/RealTimeKql/lib/`
+      - `libtcpEvent.so`
+      - `libudpEvent.so`
+    - Test binaries: `/tmp/`
+      - `tcpEventTest`
+      - `udpEventTest`
+
+    <Warning>
+    The libraries are installed to `/opt/RealTimeKql/lib/` by default. Ensure this path is in your library search path or use `LD_LIBRARY_PATH` when running applications.
+    </Warning>
+  </Step>
+</Steps>
+
+## Build Options
+
+Customize the build with CMake options:
+
+| Option | Description | Default |
+|--------|-------------|--------|
+| `-DSETUP_TESTS=ON` | Build test executables | `OFF` |
+
+### Example: Full Build with Tests
+
+```bash
+cmake -DSETUP_TESTS=ON ../ && make -j$(nproc --ignore=1) && sudo make install
+```
+
+## Verify Installation
+
+<Steps>
+  <Step title="Check library files">
+    Verify the libraries were installed:
+
+    ```bash
+    ls -lh /opt/RealTimeKql/lib/
+    ```
+
+    You should see:
+    ```
+    libtcpEvent.so
+    libudpEvent.so
+    ```
+  </Step>
+
+  <Step title="Run test programs (optional)">
+    If you built with tests, run the test executables:
+
+    ```bash
+    sudo /tmp/tcpEventTest
+    ```
+
+    You should see TCP events from active connections on your system:
+
+    ```
+     ---> PID: 1177932
+     ---> UID: 1000
+     ---> rx_b: 2988
+     ---> tx_b: 3301
+     ---> tcpi_segs_out: 20
+     ---> tcpi_segs_in: 18
+     ---> Command: ssh
+     ---> SADDR: 2001:aaa:fff:eee:ccc:a627:f45f:9c0c
+     ---> DADDR: 2601:xxx:yyy:zzz:aaa:db60:46cd:971c
+     ---> SPT: 58532
+     ---> DPT: 22
+    ```
+
+    For UDP monitoring:
+
+    ```bash
+    sudo /tmp/udpEventTest
+    ```
+
+    <Note>
+    Test programs run indefinitely and print events in real-time. Press `Ctrl+C` to exit.
+    </Note>
+  </Step>
+
+  <Step title="Check for errors">
+    If you encounter errors, verify:
+
+    - BCC is properly installed: `dpkg -l | grep bcc`
+    - Kernel headers are available: `ls /lib/modules/$(uname -r)/build`
+    - You're running with root privileges: `sudo -v`
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### BCC Not Found
+
+**Error:** `BCC not found`
+
+**Solution:** The build system will attempt automatic installation on Ubuntu. For other distributions, install BCC manually following the [official guide](https://github.com/iovisor/bcc/blob/master/INSTALL.md).
+
+### Missing Kernel Headers
+
+**Error:** `fatal error: linux/bpf.h: No such file or directory`
+
+**Solution:** Install kernel headers:
+```bash
+sudo apt-get install linux-headers-$(uname -r)
+```
+
+### Permission Denied
+
+**Error:** `Operation not permitted` when running test programs
+
+**Solution:** eBPF operations require root privileges. Run with `sudo`:
+```bash
+sudo /tmp/tcpEventTest
+```
+
+### Library Not Found at Runtime
+
+**Error:** `error while loading shared libraries: libtcpEvent.so`
+
+**Solution:** Add the installation path to your library search path:
+```bash
+export LD_LIBRARY_PATH=/opt/RealTimeKql/lib:$LD_LIBRARY_PATH
+```
+
+Or add it permanently by creating `/etc/ld.so.conf.d/realtimekql.conf`:
+```bash
+echo "/opt/RealTimeKql/lib" | sudo tee /etc/ld.so.conf.d/realtimekql.conf
+sudo ldconfig
+```
+
+## Next Steps
+
+<Card title="Quick Start Guide" icon="rocket" href="/quickstart">
+  Learn how to use the libraries in your own applications
+</Card>

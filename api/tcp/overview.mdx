@@ -1,0 +1,155 @@
+---
+title: "TCP Event API Overview"
+description: "Real-time TCP connection monitoring using eBPF kernel probes"
+---
+
+## Purpose
+
+The TCP Event API provides a high-performance, low-overhead mechanism for monitoring TCP connection state changes and network statistics in real-time using eBPF (extended Berkeley Packet Filter) technology. The library intercepts kernel TCP state transitions and correlates them with process information to deliver comprehensive network telemetry.
+
+## Library Information
+
+**Library Location**: `/opt/RealTimeKql/lib/libtcpEvent.so`
+
+**Version**: 1.03a (tcpTracer Ver 1.03e)
+
+**Dependencies**:
+- BCC (BPF Compiler Collection)
+- pthread library
+- Linux kernel with eBPF support
+
+## Header Files
+
+To use the TCP Event API in your application, include the main header file:
+
+```c
+#include "event.h"
+```
+
+The header automatically includes:
+- `common.h` - Data structure definitions (event_t, tcp_event_t, anu_tcp_info)
+
+## Basic Usage Workflow
+
+### 1. Initialize the BPF Probe
+
+```c
+const char *bpf_program = "path/to/bpf_program.c";
+AddProbe(bpf_program);
+```
+
+The `AddProbe()` function spawns a detached thread that:
+- Initializes the BPF subsystem
+- Attaches a kprobe to the `tcp_set_state` kernel function
+- Opens a perf buffer for event collection
+- Begins polling for TCP state change events
+
+### 2. Wait for Initialization
+
+```c
+while (getStatus() == 0) {
+    usleep(100000); // Wait 100ms
+}
+```
+
+The status flag indicates when the BPF probe is fully initialized and ready to capture events.
+
+### 3. Consume Events
+
+```c
+while (1) {
+    struct tcp_event_t event = DequeuePerfEvent();
+    
+    // Process event
+    printf("PID: %u, Command: %s\n", event.pid, event.task);
+    printf("Connection: %s:%u -> %s:%u\n", 
+           event.SADDR, event.SPT, event.DADDR, event.DPT);
+    printf("TX: %lu bytes, RX: %lu bytes\n", event.tx_b, event.rx_b);
+}
+```
+
+`DequeuePerfEvent()` blocks until an event is available and returns the next TCP event from the internal queue.
+
+### 4. Cleanup
+
+```c
+cleanup();
+```
+
+Detaches the kprobe and cancels background threads.
+
+## Architecture
+
+### Event Collection Pipeline
+
+1. **Kernel Probe**: BPF probe attached to `tcp_set_state()` captures TCP state transitions
+2. **Perf Buffer**: Events flow through a perf ring buffer from kernel to userspace
+3. **Event Queue**: Userspace handler (`handle_output`) adds events to a deque (max 1024 events)
+4. **Netlink Enrichment**: Parallel thread uses netlink socket diagnostics to gather TCP statistics
+5. **Consumer API**: `DequeuePerfEvent()` provides blocking access to enriched events
+
+### Thread Architecture
+
+The library uses **three concurrent threads**:
+
+| Thread | Purpose | Created By |
+|--------|---------|------------|
+| **BPF Poller** | Polls perf buffer for kernel events | `AddProbe()` / `setupBPF()` |
+| **Netlink Probe** | Queries TCP socket statistics via netlink | `DequeuePerfEvent()` (lazy init) |
+| **Consumer Thread** | Your application thread calling `DequeuePerfEvent()` | Your code |
+
+## Thread Safety
+
+The library uses multiple synchronization primitives:
+
+- **`pthread_mutex_t mtx`**: Protects the event deque during enqueue/dequeue operations
+- **`pthread_cond_t cond`**: Signals waiting consumers when new events arrive
+- **`pthread_mutex_t mapMu`**: Guards the pointer map for event memory management
+- **`pthread_rwlock_t rwlock`**: Protects the initialization status flag
+
+### Thread-Safe Operations
+
+- **`DequeuePerfEvent()`**: Thread-safe, uses mutex and condition variable
+- **`getStatus()`**: Thread-safe, uses read-write lock
+- **`cleanup()`**: Safe to call from main thread, cancels background threads
+
+### Important Notes
+
+<Warning>
+  `DequeuePerfEvent()` is a **blocking call**. It will wait indefinitely until an event is available. Design your application to handle this blocking behavior (e.g., dedicate a thread to event collection).
+</Warning>
+
+<Warning>
+  The event queue has a maximum size of **1024 events**. If the queue fills, older events are dropped with a "Shedding TCP events" message. Ensure your consumer keeps pace with event generation.
+</Warning>
+
+## Event Flow Control
+
+**Queue Overflow Behavior**:
+- When queue size exceeds 1024, oldest event is dropped (FIFO)
+- Dropped event memory is properly reclaimed
+- Console warning: `"Shedding TCP events.."`
+
+**Netlink Event Throttling**:
+- Netlink thread sleeps for 6.2 seconds (`NETLINKNAP`) between polling cycles
+- If queue > 1024, netlink events are discarded with warning: `"Shedding TCP (Netlink) events.."`
+
+## Supported Protocol Families
+
+- **AF_INET**: IPv4 connections (addresses in SADDR/DADDR as dotted-quad strings)
+- **AF_INET6**: IPv6 connections (addresses in SADDR/DADDR as colon-hex strings)
+
+## Kernel Compatibility
+
+Requires Linux kernel with:
+- eBPF/BPF support (kernel 4.1+)
+- Kprobe support
+- `tcp_set_state` symbol (standard in modern kernels)
+- Netlink socket diagnostics (`NETLINK_SOCK_DIAG`)
+
+## Performance Characteristics
+
+- **Overhead**: Minimal kernel overhead (eBPF in-kernel filtering)
+- **Event Latency**: Near real-time (microsecond-level timestamps)
+- **Memory**: ~128KB per 1024 queued events
+- **CPU**: Polling thread consumes minimal CPU when idle

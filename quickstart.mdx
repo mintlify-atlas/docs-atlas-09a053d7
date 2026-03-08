@@ -1,80 +1,486 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Get started with TCP and UDP event monitoring in minutes
 ---
 
-## Get started in three steps
+## Overview
 
-Get your documentation site running locally and make your first customization.
+This guide walks you through creating your first network monitoring application using eBPF Event Interceptor. You'll learn how to:
 
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+- Load the TCP and UDP interceptor libraries
+- Define custom eBPF programs
+- Capture and process network events in real-time
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+All examples require root privileges to load eBPF programs into the kernel.
+</Note>
+
+## TCP Event Monitoring
+
+Monitor TCP connections using the `libtcpEvent.so` library.
+
+### Basic TCP Monitor
+
+<Steps>
+  <Step title="Include headers and define structures">
+    Create a new C file with the necessary includes:
+
+    ```c tcp_monitor.c
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <dlfcn.h>
+    #include <signal.h>
+    #include <unistd.h>
+
+    #define SOFILE "/opt/RealTimeKql/lib/libtcpEvent.so"
+
+    // TCP event structure from tcpEvent/common.h
+    struct tcp_event_t {
+        uint64_t EventTime;
+        uint32_t pid;
+        uint32_t UserId;
+        uint64_t rx_b;
+        uint64_t tx_b;
+        uint32_t tcpi_segs_out;
+        uint32_t tcpi_segs_in;
+        uint16_t family;
+        uint16_t SPT;
+        uint16_t DPT;
+        char task[128];
+        char SADDR[128];
+        char DADDR[128];
+    };
+    ```
+  </Step>
+
+  <Step title="Define your eBPF program">
+    Write the kernel-side eBPF code that captures TCP state changes:
+
+    ```c
+    const char *BPF_PROGRAM = R"(
+    #include <uapi/linux/ptrace.h>
+    #include <linux/tcp.h>
+    #include <net/sock.h>
+    #include <bcc/proto.h>
+
+    BPF_HASH(birth, struct sock *, u64);
+
+    struct event_t {
+        u64 EventTime;
+        u64 ts_us;
+        u32 pid;
+        u32 uid;
+        unsigned __int128 saddr;
+        unsigned __int128 daddr;
+        u64 rx_b;
+        u64 tx_b;
+        u32 tcpi_segs_out;
+        u32 tcpi_segs_in;
+        u64 span_us;
+        u16 family;
+        u16 SPT;
+        u16 DPT;
+        char task[TASK_COMM_LEN];
+    };
+
+    BPF_PERF_OUTPUT(tcpEvents);
+
+    struct id_t {
+        u32 pid;
+        u32 uid;
+        char task[128];
+    };
+    BPF_HASH(whoami, struct sock *, struct id_t);
+
+    int kprobe__tcp_set_state(struct pt_regs *ctx, struct sock *sk, int state) {
+        u32 pid = bpf_get_current_pid_tgid() >> 32;
+        u32 uid = bpf_get_current_uid_gid() & 0xffffffff;
+
+        u16 lport = sk->__sk_common.skc_num;
+        u16 dport = sk->__sk_common.skc_dport;
+
+        // Track connection birth time
+        if (state < TCP_FIN_WAIT1) {
+            u64 ts = bpf_ktime_get_ns();
+            birth.update(&sk, &ts);
+        }
+
+        // Store process info on connection initiation
+        if (state == TCP_SYN_SENT || state == TCP_LAST_ACK) {
+            struct id_t me = {.pid = pid, .uid = uid};
+            bpf_get_current_comm(&me.task, sizeof(me.task));
+            whoami.update(&sk, &me);
+        }
+
+        // Capture event on connection close
+        if (state != TCP_CLOSE)
+            return 0;
+
+        // Calculate connection lifespan
+        u64 *tsp = birth.lookup(&sk);
+        if (tsp == 0) {
+            whoami.delete(&sk);
+            return 0;
+        }
+        u64 delta_us = (bpf_ktime_get_ns() - *tsp) / 1000;
+        birth.delete(&sk);
+
+        struct id_t *mep = whoami.lookup(&sk);
+        if (mep != 0) {
+            pid = mep->pid;
+            uid = mep->uid;
+        }
+
+        // Populate event structure
+        struct event_t event = {0};
+        struct tcp_sock *tp = (struct tcp_sock *)sk;
+        event.rx_b = tp->bytes_received;
+        event.tx_b = tp->bytes_acked;
+        event.tcpi_segs_out = tp->data_segs_out;
+        event.tcpi_segs_in = tp->data_segs_in;
+        event.family = sk->__sk_common.skc_family;
+
+        // Handle IPv4 and IPv6 addresses
+        if (event.family == AF_INET) {
+            event.saddr = sk->__sk_common.skc_rcv_saddr;
+            event.daddr = sk->__sk_common.skc_daddr;
+        } else if (event.family == AF_INET6) {
+            bpf_probe_read(&event.saddr, sizeof(event.saddr),
+                sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
+            bpf_probe_read(&event.daddr, sizeof(event.daddr),
+                sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32);
+        }
+
+        event.EventTime = bpf_ktime_get_ns();
+        event.uid = uid;
+        event.pid = pid;
+        event.SPT = lport;
+        event.DPT = ntohs(dport);
+
+        if (mep == 0) {
+            bpf_get_current_comm(&event.task, sizeof(event.task));
+        } else {
+            bpf_probe_read(&event.task, sizeof(event.task), (void *)mep->task);
+        }
+
+        if (event.family) {
+            tcpEvents.perf_submit(ctx, &event, sizeof(event));
+        }
+
+        if (mep != 0) {
+            whoami.delete(&sk);
+        }
+
+        return 0;
+    }
+    )";
+    ```
+
+    <Note>
+    This eBPF program attaches to the `tcp_set_state` kernel function and captures TCP connection events when connections close. It tracks connection lifetime, process information, and traffic statistics.
+    </Note>
+  </Step>
+
+  <Step title="Load the library and initialize">
+    Dynamically load the TCP interceptor library:
+
+    ```c
+    void (*cleanup)();
+
+    void signalHandler(int signum) {
+        printf("Shutting down...\n");
+        cleanup();
+        exit(signum);
+    }
+
+    int main() {
+        // Load the shared library
+        void *handle = dlopen(SOFILE, RTLD_LAZY);
+        if (!handle) {
+            fprintf(stderr, "Failed to load library: %s\n", dlerror());
+            exit(EXIT_FAILURE);
+        }
+
+        // Resolve symbols
+        void (*AddProbe)(const char*) = dlsym(handle, "AddProbe");
+        struct tcp_event_t (*DequeuePerfEvent)() = dlsym(handle, "DequeuePerfEvent");
+        cleanup = dlsym(handle, "cleanup");
+        unsigned (*getStatus)() = dlsym(handle, "getStatus");
+
+        if (!AddProbe || !DequeuePerfEvent || !cleanup || !getStatus) {
+            fprintf(stderr, "Failed to resolve symbols: %s\n", dlerror());
+            exit(EXIT_FAILURE);
+        }
+
+        // Set up signal handler
+        signal(SIGINT, signalHandler);
+
+        // Load the eBPF program
+        printf("Loading eBPF probe...\n");
+        AddProbe(BPF_PROGRAM);
+
+        // Wait for probe to be ready
+        while (!getStatus()) {
+            printf("Waiting for probe initialization...\n");
+            sleep(1);
+        }
+
+        printf("Monitoring TCP connections (press Ctrl+C to exit)...\n");
+    ```
+  </Step>
+
+  <Step title="Process events">
+    Read and display TCP events in a loop:
+
+    ```c
+        // Event processing loop
+        while (1) {
+            struct tcp_event_t event = DequeuePerfEvent();
+
+            // Print event details
+            printf("\n--- TCP Connection Closed ---\n");
+            printf("Process: %s (PID: %u, UID: %u)\n",
+                   event.task, event.pid, event.UserId);
+            printf("Endpoints: %s:%u -> %s:%u\n",
+                   event.SADDR, event.SPT, event.DADDR, event.DPT);
+            printf("Traffic: RX=%lu bytes, TX=%lu bytes\n",
+                   event.rx_b, event.tx_b);
+            printf("Segments: IN=%u, OUT=%u\n",
+                   event.tcpi_segs_in, event.tcpi_segs_out);
+            printf("Timestamp: %lu ns\n", event.EventTime);
+        }
+
+        dlclose(handle);
+        return 0;
+    }
+    ```
+  </Step>
+</Steps>
+
+### Build and Run
+
+Compile your TCP monitor:
+
+```bash
+gcc -o tcp_monitor tcp_monitor.c -ldl
+```
+
+Run with root privileges:
+
+```bash
+sudo ./tcp_monitor
+```
+
+### Expected Output
+
+When TCP connections close on your system, you'll see events like:
+
+```
+--- TCP Connection Closed ---
+Process: ssh (PID: 1177932, UID: 1000)
+Endpoints: 2001:aaa:fff:eee:ccc:a627:f45f:9c0c:58532 -> 2601:xxx:yyy:zzz:aaa:db60:46cd:971c:22
+Traffic: RX=2988 bytes, TX=3301 bytes
+Segments: IN=18, OUT=20
+Timestamp: 1628184562000000000 ns
+```
+
+## UDP Event Monitoring
+
+Monitor UDP traffic using the `libudpEvent.so` library.
+
+### Basic UDP Monitor
+
+<CodeGroup>
+```c udp_monitor.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <dlfcn.h>
+#include <signal.h>
+#include <unistd.h>
+
+#define SOFILE "/opt/RealTimeKql/lib/libudpEvent.so"
+
+// UDP event structure from udpEvent/common.h
+struct udp_event_t {
+    uint16_t family;
+    uint32_t pid;
+    uint32_t UserId;
+    uint64_t EventTime;
+    uint16_t SPT;
+    uint16_t DPT;
+    char task[16];
+    uint64_t rx_b;
+    uint64_t tx_b;
+    uint32_t rxPkts;
+    uint32_t txPkts;
+    char SADDR[64];
+    char DADDR[64];
+};
+
+void (*cleanup)();
+
+void signalHandler(int signum) {
+    printf("Shutting down...\n");
+    cleanup();
+    exit(signum);
+}
+
+int main() {
+    // Load the shared library
+    void *handle = dlopen(SOFILE, RTLD_LAZY);
+    if (!handle) {
+        fprintf(stderr, "Failed to load library: %s\n", dlerror());
+        exit(EXIT_FAILURE);
+    }
+
+    // Resolve symbols (note: AddProbe takes no arguments for UDP)
+    void (*AddProbe)() = dlsym(handle, "AddProbe");
+    struct udp_event_t (*DequeuePerfEvent)() = dlsym(handle, "DequeuePerfEvent");
+    cleanup = dlsym(handle, "cleanup");
+    unsigned (*getStatus)() = dlsym(handle, "getStatus");
+
+    if (!AddProbe || !DequeuePerfEvent || !cleanup || !getStatus) {
+        fprintf(stderr, "Failed to resolve symbols: %s\n", dlerror());
+        exit(EXIT_FAILURE);
+    }
+
+    signal(SIGINT, signalHandler);
+
+    // Load the eBPF program (built-in for UDP)
+    printf("Loading UDP eBPF probe...\n");
+    AddProbe();
+
+    // Wait for probe to be ready
+    while (!getStatus()) {
+        printf("Waiting for probe initialization...\n");
+        sleep(1);
+    }
+
+    printf("Monitoring UDP traffic (press Ctrl+C to exit)...\n");
+
+    // Event processing loop
+    while (1) {
+        struct udp_event_t event = DequeuePerfEvent();
+
+        printf("\n--- UDP Traffic ---\n");
+        printf("Process: %s (PID: %u, UID: %u)\n",
+               event.task, event.pid, event.UserId);
+        printf("Address Family: %u\n", event.family);
+        printf("Endpoints: %s:%u -> %s:%u\n",
+               event.SADDR, event.SPT, event.DADDR, event.DPT);
+        printf("Traffic: RX=%lu bytes (%u pkts), TX=%lu bytes (%u pkts)\n",
+               event.rx_b, event.rxPkts, event.tx_b, event.txPkts);
+        printf("Timestamp: %lu ns\n", event.EventTime);
+    }
+
+    dlclose(handle);
+    return 0;
+}
+```
+</CodeGroup>
+
+### Build and Run
+
+```bash
+gcc -o udp_monitor udp_monitor.c -ldl
+sudo ./udp_monitor
+```
+
+### Expected Output
+
+```
+--- UDP Traffic ---
+Process: udpTraffic.sh (PID: 1180210, UID: 1000)
+Address Family: 10
+Endpoints: 2001:xxx:f0:5e:aaa:a627:f45f:9c0c:42486 -> 2001:xxx:f0:5e:bbb:8d6f:32ef:6180:53
+Traffic: RX=0 bytes (0 pkts), TX=32 bytes (1 pkts)
+Timestamp: 1628185427077225859 ns
+```
+
+## Key API Functions
+
+Both libraries expose the same core API via dynamic loading:
+
+| Function | TCP Signature | UDP Signature | Description |
+|----------|---------------|---------------|-------------|
+| `AddProbe` | `void AddProbe(const char *bpf_code)` | `void AddProbe()` | Load eBPF program into kernel |
+| `DequeuePerfEvent` | `struct tcp_event_t DequeuePerfEvent()` | `struct udp_event_t DequeuePerfEvent()` | Read next event (blocking) |
+| `getStatus` | `unsigned getStatus()` | `unsigned getStatus()` | Check if probe is ready (1=ready) |
+| `cleanup` | `void cleanup()` | `void cleanup()` | Detach probe and free resources |
+
+<Warning>
+**Important differences:**
+- TCP's `AddProbe()` requires your custom eBPF program as a parameter
+- UDP's `AddProbe()` takes no arguments (uses built-in eBPF code)
+- Always call `cleanup()` before exiting to properly detach kernel probes
+</Warning>
+
+## Understanding the Event Structures
+
+### TCP Event Fields
+
+```c
+struct tcp_event_t {
+    uint64_t EventTime;      // Timestamp in nanoseconds
+    uint32_t pid;            // Process ID
+    uint32_t UserId;         // User ID
+    uint64_t rx_b;           // Bytes received
+    uint64_t tx_b;           // Bytes transmitted (acknowledged)
+    uint32_t tcpi_segs_out;  // TCP segments sent
+    uint32_t tcpi_segs_in;   // TCP segments received
+    uint16_t family;         // Address family (AF_INET=2, AF_INET6=10)
+    uint16_t SPT;            // Source port
+    uint16_t DPT;            // Destination port
+    char task[128];          // Process name
+    char SADDR[128];         // Source address (string)
+    char DADDR[128];         // Destination address (string)
+};
+```
+
+### UDP Event Fields
+
+```c
+struct udp_event_t {
+    uint16_t family;         // Address family
+    uint32_t pid;            // Process ID
+    uint32_t UserId;         // User ID
+    uint64_t EventTime;      // Timestamp in nanoseconds
+    uint16_t SPT;            // Source port
+    uint16_t DPT;            // Destination port
+    char task[16];           // Process name
+    uint64_t rx_b;           // Bytes received
+    uint64_t tx_b;           // Bytes transmitted
+    uint32_t rxPkts;         // Packets received
+    uint32_t txPkts;         // Packets transmitted
+    char SADDR[64];          // Source address (string)
+    char DADDR[64];          // Destination address (string)
+};
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Error Handling" icon="triangle-exclamation">
+    Always check return values from `dlopen()` and `dlsym()`. Use `dlerror()` for detailed error messages.
+  </Card>
+  <Card title="Signal Handling" icon="hand">
+    Implement signal handlers to call `cleanup()` on SIGINT/SIGTERM to properly detach probes.
+  </Card>
+  <Card title="Resource Management" icon="memory">
+    Call `dlclose()` before exiting to release library resources.
+  </Card>
+  <Card title="Privileges" icon="shield-halved">
+    Run with `sudo` or set appropriate capabilities (`CAP_BPF`, `CAP_PERFMON`).
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+- **Customize eBPF Programs**: Modify the eBPF code to filter specific connections or capture additional metrics
+- **Integrate with Observability**: Send events to your telemetry pipeline (Prometheus, Kafka, etc.)
+- **Performance Tuning**: Adjust BPF map sizes and filtering logic for high-traffic environments
+- **Security Monitoring**: Build real-time alerts for suspicious network patterns
+
+<Note>
+For production deployments, consider implementing event buffering, rate limiting, and log rotation to handle high-volume network environments.
 </Note>

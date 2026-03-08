@@ -1,0 +1,445 @@
+---
+title: Building from Source
+description: Build and install the eBPF Event Interceptor from source code
+---
+
+This guide walks through building the eBPF Event Interceptor from source, including setting up dependencies, configuring build options, and troubleshooting common issues.
+
+## Prerequisites
+
+Before building, ensure you have the required dependencies installed.
+
+### System Requirements
+
+- **Linux Kernel**: 4.1 or newer with eBPF support
+- **Build Tools**: `gcc`, `g++`, `make`, `cmake` (3.10+)
+- **BCC**: BPF Compiler Collection (version varies by distribution)
+
+### Installing Build Dependencies
+
+On Ubuntu 20.04 or newer:
+
+```bash
+sudo apt install -y build-essential cmake
+```
+
+<Note>
+  CMake 3.10 or higher is required. Check your version with `cmake --version`.
+</Note>
+
+## Setting Up BCC
+
+The BPF Compiler Collection (BCC) is required to compile eBPF programs.
+
+### Automatic Setup (Ubuntu)
+
+The build system can automatically install BCC for Ubuntu systems:
+
+```bash
+cmake ../
+make -j$(nproc --ignore=1)
+```
+
+If BCC is not found, the build system will run `scripts/extended.sh` to install it.
+
+### Manual BCC Installation
+
+For other distributions or manual installation:
+
+<Tabs>
+  <Tab title="Ubuntu 20.04">
+    ```bash
+    sudo apt-get -y install bison build-essential cmake flex git \
+      libedit-dev libllvm7 llvm-7-dev libclang-7-dev python \
+      zlib1g-dev libelf-dev libfl-dev
+    ```
+  </Tab>
+  
+  <Tab title="Ubuntu 18.04">
+    ```bash
+    sudo apt-get -y install bison build-essential cmake flex git \
+      libedit-dev libllvm6.0 llvm-6.0-dev libclang-6.0-dev python \
+      zlib1g-dev libelf-dev libfl-dev
+    ```
+  </Tab>
+  
+  <Tab title="Other Distributions">
+    ```bash
+    sudo apt-get -y install bison build-essential cmake flex git \
+      libedit-dev libllvm3.7 llvm-3.7-dev libclang-3.7-dev python \
+      zlib1g-dev libelf-dev
+    ```
+  </Tab>
+</Tabs>
+
+Then build and install BCC from source:
+
+```bash
+cd /tmp
+git clone https://github.com/iovisor/bcc.git
+mkdir bcc/build && cd bcc/build
+cmake ../
+make -j$(nproc --ignore=1)
+sudo make install
+```
+
+<Tip>
+  For detailed BCC installation instructions for your specific distribution, see the [official BCC installation guide](https://github.com/iovisor/bcc/blob/master/INSTALL.md).
+</Tip>
+
+## Building the Project
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/microsoft/eBPF-Event-Interceptor.git
+    cd eBPF-Event-Interceptor
+    ```
+  </Step>
+
+  <Step title="Create build directory">
+    ```bash
+    mkdir build && cd build
+    ```
+  </Step>
+
+  <Step title="Configure with CMake">
+    Run CMake to configure the build:
+    
+    ```bash
+    cmake ../
+    ```
+    
+    You should see output like:
+    ```
+    Found BCC
+    tcp Interceptor
+    udp Interceptor
+    -- Configuring done
+    -- Generating done
+    -- Build files have been written to: /path/to/eBPF-Event-Interceptor/build
+    ```
+  </Step>
+
+  <Step title="Build the libraries">
+    Compile using all available CPU cores:
+    
+    ```bash
+    make -j$(nproc --ignore=1)
+    ```
+    
+    This builds:
+    - `libtcpEvent.so` - TCP event interceptor
+    - `libudpEvent.so` - UDP event interceptor
+  </Step>
+
+  <Step title="Install the libraries">
+    Install to the default location (`/opt/RealTimeKql/lib`):
+    
+    ```bash
+    sudo make install
+    ```
+    
+    Output:
+    ```
+    Install the project...
+    -- Install configuration: ""
+    -- Installing: /opt/RealTimeKql/lib/libtcpEvent.so
+    -- Installing: /opt/RealTimeKql/lib/libudpEvent.so
+    ```
+  </Step>
+</Steps>
+
+## CMake Build Options
+
+The build system supports several configuration options:
+
+### SETUP_TESTS
+
+Enable building test programs:
+
+```bash
+cmake -DSETUP_TESTS=ON ../
+make -j$(nproc --ignore=1)
+sudo make install
+```
+
+With tests enabled, the build produces:
+
+```
+[ 50%] Built target tcpEvent
+[ 50%] Built target udpEvent
+[100%] Built target udpEventTest
+[100%] Built target tcpEventTest
+```
+
+Test binaries are installed to `/tmp`:
+- `/tmp/tcpEventTest`
+- `/tmp/udpEventTest`
+
+<Note>
+  Tests are disabled by default (`SETUP_TESTS=OFF`). Enable them for development and testing.
+</Note>
+
+### Custom Installation Paths
+
+To change installation directories, modify the CMakeLists.txt:
+
+```cmake
+set(SO_FOLDER /opt/RealTimeKql/lib)  # Library installation path
+set(BIN_FOLDER /opt/RealTimeKql/bin) # Binary installation path
+```
+
+Or override during CMake configuration:
+
+```bash
+cmake -DCMAKE_INSTALL_PREFIX=/usr/local ../
+```
+
+## Build Output Structure
+
+After a successful build, your build directory contains:
+
+```
+build/
+├── tcpEvent/
+│   ├── libtcpEvent.so
+│   └── Test/
+│       └── tcpEventTest (if SETUP_TESTS=ON)
+├── udpEvent/
+│   ├── libudpEvent.so
+│   └── Test/
+│       └── udpEventTest (if SETUP_TESTS=ON)
+└── CMakeFiles/
+```
+
+## Compilation Flags
+
+The build system uses strict compiler flags:
+
+```cmake
+add_compile_options(-Wall -Wextra -Werror -D_FILE_OFFSET_BITS=64)
+```
+
+- `-Wall -Wextra`: Enable comprehensive warnings
+- `-Werror`: Treat warnings as errors
+- `-D_FILE_OFFSET_BITS=64`: Enable large file support
+- `-pthread`: Enable POSIX threads
+
+<Warning>
+  The `-Werror` flag means any compiler warnings will fail the build. This ensures code quality but may require fixes when using different compiler versions.
+</Warning>
+
+## Build Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="BCC not found">
+    Error:
+    ```
+    BCC not found
+    Setting up bcc and pre-requisite packages
+    ```
+    
+    **Solution**: The build system will attempt automatic installation. If it fails:
+    1. Install BCC manually (see [Manual BCC Installation](#manual-bcc-installation))
+    2. Ensure BCC is in the system library path: `ldconfig -p | grep bcc`
+    3. If installed to a custom location, set the library path:
+       ```bash
+       export LD_LIBRARY_PATH=/path/to/bcc/lib:$LD_LIBRARY_PATH
+       ```
+  </Accordion>
+  
+  <Accordion title="CMake version too old">
+    Error:
+    ```
+    CMake 3.10 or higher is required. You are running version X.X
+    ```
+    
+    **Solution**: Install a newer CMake:
+    ```bash
+    # Ubuntu 18.04+
+    sudo apt-get install cmake
+    
+    # Or build from source
+    wget https://cmake.org/files/v3.20/cmake-3.20.0.tar.gz
+    tar xf cmake-3.20.0.tar.gz
+    cd cmake-3.20.0
+    ./bootstrap && make -j$(nproc) && sudo make install
+    ```
+  </Accordion>
+  
+  <Accordion title="Missing pthread library">
+    Error:
+    ```
+    FATAL_ERROR "We need pthread!"
+    ```
+    
+    **Solution**: Install pthread development files:
+    ```bash
+    sudo apt-get install libc6-dev
+    ```
+  </Accordion>
+  
+  <Accordion title="Compiler errors with -Werror">
+    If you encounter warnings-as-errors:
+    
+    **Option 1**: Fix the warnings (recommended)
+    
+    **Option 2**: Temporarily disable `-Werror` in CMakeLists.txt:
+    ```cmake
+    # Comment out or remove -Werror
+    add_compile_options(-Wall -Wextra -D_FILE_OFFSET_BITS=64)
+    ```
+  </Accordion>
+  
+  <Accordion title="LLVM version mismatch">
+    Error:
+    ```
+    error: 'llvm::Error' has not been declared
+    ```
+    
+    **Solution**: Ensure BCC is built with the same LLVM version as your system:
+    ```bash
+    llvm-config --version
+    ```
+    Rebuild BCC if versions don't match.
+  </Accordion>
+  
+  <Accordion title="Permission denied during install">
+    Error:
+    ```
+    CMake Error at cmake_install.cmake:XX (file):
+      file INSTALL cannot copy file
+    ```
+    
+    **Solution**: Use `sudo` for installation:
+    ```bash
+    sudo make install
+    ```
+    
+    Or create the installation directory with appropriate permissions:
+    ```bash
+    sudo mkdir -p /opt/RealTimeKql/lib
+    sudo chown $USER:$USER /opt/RealTimeKql/lib
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Verifying the Build
+
+After installation, verify the libraries are correctly installed:
+
+```bash
+ls -lh /opt/RealTimeKql/lib/
+```
+
+Expected output:
+```
+total 2.1M
+-rwxr-xr-x 1 root root 1.1M Jan 15 10:30 libtcpEvent.so
+-rwxr-xr-x 1 root root 1.0M Jan 15 10:30 libudpEvent.so
+```
+
+Check library dependencies:
+
+```bash
+ldd /opt/RealTimeKql/lib/libtcpEvent.so
+```
+
+Should show `libbcc.so` in the dependencies:
+```
+linux-vdso.so.1
+libbcc.so.0 => /usr/lib/x86_64-linux-gnu/libbcc.so.0
+libstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+...
+```
+
+## Rebuilding
+
+To rebuild after making changes:
+
+```bash
+cd build
+make clean
+make -j$(nproc --ignore=1)
+sudo make install
+```
+
+For a complete rebuild:
+
+```bash
+cd ..
+rm -rf build
+mkdir build && cd build
+cmake -DSETUP_TESTS=ON ../
+make -j$(nproc --ignore=1)
+sudo make install
+```
+
+## Development Workflow
+
+For active development:
+
+<Steps>
+  <Step title="Build with tests enabled">
+    ```bash
+    cmake -DSETUP_TESTS=ON ../
+    ```
+  </Step>
+  
+  <Step title="Make code changes">
+    Edit source files in `tcpEvent/` or `udpEvent/`
+  </Step>
+  
+  <Step title="Rebuild incrementally">
+    ```bash
+    make -j$(nproc --ignore=1)
+    ```
+  </Step>
+  
+  <Step title="Test your changes">
+    ```bash
+    sudo make install
+    sudo /tmp/tcpEventTest  # or udpEventTest
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Use `make -j$(nproc)` to use all CPU cores, or `make -j$(nproc --ignore=1)` to leave one core free for other tasks.
+</Tip>
+
+## Cross-Platform Considerations
+
+### Kernel Headers
+
+eBPF programs require kernel headers. Ensure they're installed:
+
+```bash
+sudo apt-get install linux-headers-$(uname -r)
+```
+
+### Architecture Support
+
+The interceptor supports x86_64 architecture. For other architectures, you may need to:
+
+1. Adjust struct alignment in `common.h`
+2. Verify eBPF helper function compatibility
+3. Test thoroughly on your target platform
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Testing" icon="flask" href="/guides/testing">
+    Learn how to run and create tests
+  </Card>
+  <Card title="TCP Monitoring" icon="network-wired" href="/guides/tcp-monitoring">
+    Start monitoring TCP connections
+  </Card>
+  <Card title="UDP Monitoring" icon="diagram-project" href="/guides/udp-monitoring">
+    Start monitoring UDP traffic
+  </Card>
+  <Card title="Contributing" icon="code-pull-request" href="https://github.com/microsoft/eBPF-Event-Interceptor">
+    Contribute to the project
+  </Card>
+</CardGroup>

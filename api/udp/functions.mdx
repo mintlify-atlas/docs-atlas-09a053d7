@@ -1,0 +1,390 @@
+---
+title: "UDP Event API Functions"
+description: "Function reference for the UDP Event API"
+---
+
+## Function Overview
+
+The UDP Event API exports four C-compatible functions for UDP traffic monitoring:
+
+- `AddProbe()` - Initialize and start UDP event tracing
+- `setupBPF()` - Internal BPF initialization (called by AddProbe)
+- `DequeuePerfEvent()` - Retrieve UDP events from the queue
+- `getStatus()` - Check BPF initialization status
+- `cleanup()` - Detach probes and cleanup resources
+
+---
+
+## AddProbe
+
+Initializes the UDP event tracer and begins monitoring all UDP traffic system-wide.
+
+### Signature
+
+```c
+extern void AddProbe();
+```
+
+### Parameters
+
+<Note>
+Unlike the TCP Event API, the UDP version of `AddProbe()` takes **no parameters**. The UDP tracer monitors all UDP traffic without filtering.
+</Note>
+
+### Return Value
+
+- **Type**: `void`
+- This function does not return a value
+
+### Behavior
+
+1. Prints version information to stdout:
+   ```
+   UDP Tracer Ver 1.04b with BCC <version>
+   ```
+2. Spawns a detached background thread that calls `setupBPF()`
+3. Returns immediately (non-blocking)
+4. The background thread continues running until `cleanup()` is called
+
+### Threading
+
+- **Non-blocking**: Returns immediately after spawning the background thread
+- **Detached thread**: The spawned thread runs independently
+- **Thread ID**: Stored internally for cleanup purposes
+
+### Example Usage
+
+```c
+#include "common.h"
+
+extern void AddProbe();
+extern unsigned getStatus();
+
+int main() {
+    // Start UDP tracing
+    AddProbe();
+    
+    // Wait for initialization to complete
+    while (getStatus() == 0) {
+        usleep(100000);  // Wait 100ms
+    }
+    
+    printf("UDP tracer is ready!\n");
+    return 0;
+}
+```
+
+### Notes
+
+- Requires root privileges to attach kernel probes
+- Should only be called once per application instance
+- Use `getStatus()` to verify initialization completed successfully
+
+### Source Reference
+
+`udpTracer.cc:388-392`
+
+---
+
+## setupBPF
+
+Internal function that performs the actual BPF program initialization and kernel probe attachment.
+
+### Signature
+
+```c
+int setupBPF();
+```
+
+### Parameters
+
+None.
+
+### Return Value
+
+<ResponseField name="return" type="int">
+  - `0` - Success
+  - `1` - Error during initialization or probe attachment
+</ResponseField>
+
+### Behavior
+
+This function performs the following operations:
+
+1. Initializes the BPF program with the embedded eBPF code
+2. Attaches kernel probes to the following functions:
+   - `ip6_datagram_connect` - IPv6 UDP connection
+   - `ip4_datagram_connect` - IPv4 UDP connection
+   - `udp_recvmsg` - UDP message reception (kprobe and kretprobe)
+   - `udp_sendmsg` - UDP message transmission
+   - `udp_destruct_sock` - UDP socket destruction
+   - `udpv6_sendmsg` - IPv6 UDP message transmission
+   - `udpv6_recvmsg` - IPv6 UDP message reception (kprobe and kretprobe)
+3. Opens the perf buffer for event communication
+4. Frees BCC compiler memory
+5. Increments the status flag
+6. Enters an infinite polling loop to receive events
+
+### Threading
+
+- **Blocking**: Runs in an infinite loop polling for events
+- Called by the background thread spawned by `AddProbe()`
+- Does not return under normal operation
+
+### Notes
+
+- This is an internal function typically not called directly by applications
+- Errors are printed to stderr with descriptive messages
+- The function stores the thread ID for cleanup purposes
+- All attached probe names are stored in `fNamesVector` for later detachment
+
+### Source Reference
+
+`udpTracer.cc:394-500`
+
+---
+
+## DequeuePerfEvent
+
+Retrieves the next UDP event from the event queue. This is the primary function for consuming UDP events.
+
+### Signature
+
+```c
+extern struct udp_event_t DequeuePerfEvent();
+```
+
+### Parameters
+
+None.
+
+### Return Value
+
+<ResponseField name="return" type="struct udp_event_t">
+  A complete UDP event structure containing connection details, traffic statistics, and process information.
+</ResponseField>
+
+See [Data Structures](/api/udp/data-structures) for detailed field information.
+
+### Behavior
+
+- **Blocking**: If the queue is empty, the function blocks until an event becomes available
+- **Thread-safe**: Uses mutex and condition variable for synchronization
+- **FIFO order**: Events are returned in the order they were captured
+- **Event conversion**: Converts internal `event_t` structure to consumer-facing `udp_event_t`
+
+#### Time Adjustment
+
+The function adjusts event timestamps to absolute system time:
+
+```c
+toConsumer.EventTime = event->EventTime + notSoLongAgo;
+```
+
+Where `notSoLongAgo` is calculated from system boot time to convert kernel time to epoch time.
+
+#### Address Conversion
+
+IP addresses are converted from binary to string format:
+
+- **IPv4**: Uses `inet_ntop(AF_INET, ...)`
+- **IPv6**: Uses `inet_ntop(AF_INET6, ...)`
+
+### Threading
+
+- **Blocking call**: Suspends the calling thread until an event is available
+- **Condition variable**: Uses pthread condition variable for efficient waiting
+- Safe to call from multiple threads (though typically called from a single consumer thread)
+
+### Example Usage
+
+```c
+#include <stdio.h>
+#include "common.h"
+
+extern struct udp_event_t DequeuePerfEvent();
+
+void process_events() {
+    while (1) {
+        // Blocks until an event is available
+        struct udp_event_t event = DequeuePerfEvent();
+        
+        // Process the event
+        if (event.family == AF_INET) {
+            printf("IPv4 UDP connection\n");
+        } else if (event.family == AF_INET6) {
+            printf("IPv6 UDP connection\n");
+        }
+        
+        printf("Process: %s (PID %u)\n", event.task, event.pid);
+        printf("Source: %s:%u\n", event.SADDR, event.SPT);
+        printf("Dest: %s:%u\n", event.DADDR, event.DPT);
+        printf("TX: %llu bytes in %u packets\n", event.tx_b, event.txPkts);
+        printf("RX: %llu bytes in %u packets\n", event.rx_b, event.rxPkts);
+    }
+}
+```
+
+### Notes
+
+- Events with unknown address families are skipped (error printed to stderr)
+- The returned structure is a copy; modifications do not affect internal state
+- Task name is limited to 16 characters (including null terminator)
+
+### Source Reference
+
+`udpTracer.cc:530-576`
+
+---
+
+## getStatus
+
+Returns the initialization status of the BPF subsystem.
+
+### Signature
+
+```c
+extern unsigned getStatus();
+```
+
+### Parameters
+
+None.
+
+### Return Value
+
+<ResponseField name="return" type="unsigned">
+  - `0` - BPF initialization in progress or not started
+  - `1` - BPF initialized successfully and ready to capture events
+</ResponseField>
+
+### Behavior
+
+- **Thread-safe**: Uses read-write lock for safe concurrent access
+- **Non-blocking**: Returns immediately with current status
+- Status is incremented to 1 when `setupBPF()` completes initialization
+
+### Threading
+
+- Safe to call from any thread
+- Uses `pthread_rwlock_rdlock()` for thread-safe read access
+
+### Example Usage
+
+```c
+#include <stdio.h>
+#include <unistd.h>
+
+extern void AddProbe();
+extern unsigned getStatus();
+
+int main() {
+    AddProbe();
+    
+    // Poll until ready
+    printf("Initializing BPF...\n");
+    while (getStatus() == 0) {
+        printf(".");
+        fflush(stdout);
+        usleep(500000);  // Wait 500ms
+    }
+    printf("\nReady!\n");
+    
+    return 0;
+}
+```
+
+### Notes
+
+- Useful for startup synchronization
+- Does not indicate if errors occurred during initialization
+- Check stderr output for initialization errors
+
+### Source Reference
+
+`udpTracer.cc:502-507`
+
+---
+
+## cleanup
+
+Detaches all kernel probes and releases resources. Should be called before application exit.
+
+### Signature
+
+```c
+extern void cleanup();
+```
+
+### Parameters
+
+None.
+
+### Return Value
+
+- **Type**: `void`
+- This function does not return a value
+
+### Behavior
+
+1. Prints "Cleaning up!" to stdout
+2. Iterates through all attached probes and detaches them
+3. Prints detachment status for each probe (success or error)
+4. Cancels the background polling thread if it exists
+5. Prints "bpf.detach_kprobe OK" confirmation
+
+### Probes Detached
+
+The following kernel probes are detached:
+
+- `ip6_datagram_connect`
+- `ip4_datagram_connect`
+- `udp_recvmsg`
+- `udp_sendmsg`
+- `udp_destruct_sock`
+- `udpv6_sendmsg`
+- `udpv6_recvmsg`
+- `kretprobe__udpv6_recvmsg`
+
+### Threading
+
+- Cancels the background thread created by `AddProbe()`
+- Uses `pthread_cancel()` to terminate the polling loop
+
+### Example Usage
+
+```c
+#include <signal.h>
+#include <stdlib.h>
+
+extern void cleanup();
+
+void signal_handler(int signum) {
+    printf("\nReceived signal %d, cleaning up...\n", signum);
+    cleanup();
+    exit(0);
+}
+
+int main() {
+    // Register signal handler
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    
+    // ... application code ...
+    
+    // Normal cleanup
+    cleanup();
+    return 0;
+}
+```
+
+### Notes
+
+- Should be called before application exit to properly release kernel resources
+- After calling `cleanup()`, do not call `DequeuePerfEvent()` or `getStatus()`
+- Detachment errors are reported to stderr but do not prevent cleanup from continuing
+- Thread cancellation happens after all probes are detached
+
+### Source Reference
+
+`udpTracer.cc:606-623`

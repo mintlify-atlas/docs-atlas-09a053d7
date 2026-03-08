@@ -1,0 +1,476 @@
+---
+title: 'System Architecture'
+description: 'Deep dive into the eBPF Event Interceptor architecture and component design'
+---
+
+## Overview
+
+The eBPF Event Interceptor is built as a modular system with two primary components: **tcpEvent** and **udpEvent**. Each component operates as an independent library that attaches eBPF programs to kernel functions, streams events through perf buffers, and provides a C/C++ API for event consumption.
+
+<Info>
+Both tcpEvent and udpEvent are compiled as shared objects (.so files) that can be loaded dynamically into applications for real-time network monitoring.
+</Info>
+
+## High-Level Architecture
+
+The system follows a kernel-to-userspace event pipeline:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Kernel Space                            │
+│  ┌──────────────┐    ┌──────────────┐   ┌──────────────┐  │
+│  │ tcp_set_state│    │ udp_sendmsg  │   │ udp_recvmsg  │  │
+│  └──────┬───────┘    └──────┬───────┘   └──────┬───────┘  │
+│         │                   │                   │          │
+│    ┌────▼────────────────────▼───────────────────▼─────┐   │
+│    │         eBPF Programs (Kprobes)                   │   │
+│    │  - kprobe__tcp_set_state                          │   │
+│    │  - kprobe__udp_sendmsg / kprobe__udpv6_sendmsg   │   │
+│    │  - kprobe_udp_recvmsg / kretprobe__udp_recvmsg   │   │
+│    └────────────────────┬──────────────────────────────┘   │
+│                         │                                  │
+│                    ┌────▼─────┐                            │
+│                    │ BPF Maps │                            │
+│                    │ & Tables │                            │
+│                    └────┬─────┘                            │
+│                         │                                  │
+│                  ┌──────▼───────┐                          │
+│                  │ Perf Buffers │                          │
+│                  │ - tcpEvents  │                          │
+│                  │ - bpfPerfBuf │                          │
+│                  └──────┬───────┘                          │
+└─────────────────────────┼──────────────────────────────────┘
+                          │
+┌─────────────────────────▼──────────────────────────────────┐
+│                    User Space                              │
+│  ┌────────────────────────────────────────────────────┐   │
+│  │              BCC Framework (libbcc)                │   │
+│  │  - bpf.init()                                      │   │
+│  │  - bpf.attach_kprobe()                             │   │
+│  │  - bpf.open_perf_buffer()                          │   │
+│  │  - bpf.poll_perf_buffer()                          │   │
+│  └────────────┬───────────────────────────────────────┘   │
+│               │                                            │
+│       ┌───────▼────────┐                                   │
+│       │ handle_output()│                                   │
+│       │   callback     │                                   │
+│       └───────┬────────┘                                   │
+│               │                                            │
+│      ┌────────▼─────────┐                                  │
+│      │  std::deque      │                                  │
+│      │  eventDeque      │                                  │
+│      │  (MAXQSIZE=1024) │                                  │
+│      └────────┬─────────┘                                  │
+│               │                                            │
+│    ┌──────────▼───────────┐                                │
+│    │ DequeuePerfEvent()   │                                │
+│    │  Public API          │                                │
+│    └──────────────────────┘                                │
+└────────────────────────────────────────────────────────────┘
+```
+
+## Core Components
+
+### tcpEvent Library
+
+The TCP event interceptor monitors TCP state changes and enriches events with socket diagnostics.
+
+**Key Files:**
+- `tcpEvent/event.cc` - Main implementation (710 lines)
+- `tcpEvent/event.h` - Public API declarations
+- `tcpEvent/common.h` - Data structure definitions
+
+**Functionality:**
+- Attaches to `tcp_set_state` kernel function
+- Uses netlink socket diagnostics for detailed TCP statistics
+- Dual event collection: kprobes + netlink polling
+- Attributes events to processes via /proc filesystem
+
+<Card title="TCP Event Flow" icon="flow">
+  1. Kprobe on `tcp_set_state` captures state changes
+  2. Events pushed to `tcpEvents` perf buffer
+  3. Parallel netlink thread polls socket diagnostics every 6.2s
+  4. Events enriched with PID, UID, command name, and TCP stats
+  5. Stored in deque for consumer retrieval
+</Card>
+
+### udpEvent Library
+
+The UDP event interceptor tracks UDP send/receive operations across IPv4 and IPv6.
+
+**Key Files:**
+- `udpEvent/udpTracer.cc` - Main implementation (626 lines)
+- `udpEvent/common.h` - Data structure definitions
+
+**Kprobes Attached:**
+```cpp
+// Connection tracking
+ip4_datagram_connect  → kprobe_ip4_datagram_connect
+ip6_datagram_connect  → kprobe_ip6_datagram_connect
+
+// Send operations
+udp_sendmsg           → kprobe__udp_sendmsg
+udpv6_sendmsg         → kprobe__udpv6_sendmsg
+
+// Receive operations
+udp_recvmsg           → kprobe_udp_recvmsg + kretprobe__udp_recvmsg
+udpv6_recvmsg         → kprobe__udpv6_recvmsg + kretprobe__udpv6_recvmsg
+
+// Cleanup
+udp_destruct_sock     → kprobe_udp_destruct_sock
+```
+
+<Note>
+UDP tracking uses both entry kprobes and return kretprobes to capture actual bytes sent/received from function return values.
+</Note>
+
+## Perf Buffer Architecture
+
+### Buffer Configuration
+
+Both libraries use BCC's `BPF_PERF_OUTPUT` mechanism:
+
+**TCP:**
+```c
+#define TABLE "tcpEvents"
+bpf.open_perf_buffer(TABLE, &handle_output)
+```
+
+**UDP:**
+```c
+BPF_PERF_OUTPUT(bpfPerfBuffer);
+bpf.open_perf_buffer("bpfPerfBuffer", &handle_output)
+```
+
+### Event Flow
+
+1. **Kernel → Perf Buffer:** eBPF programs call `perf_submit()` to push events
+2. **Polling:** `bpf.poll_perf_buffer()` runs in infinite loop
+3. **Callback:** `handle_output()` invoked for each event
+4. **Queuing:** Events pushed to `std::deque<event_t*>`
+5. **Consumption:** `DequeuePerfEvent()` retrieves events for applications
+
+### Queue Management
+
+```cpp
+// From event.cc:25
+#define MAXQSIZE 1024
+
+void handle_output(void *cb_cookie, void *data, int data_size) {
+    auto event = static_cast<event_t*>(data);
+    pthread_mutex_lock(&mtx);
+    if (eventDeque.size() > MAXQSIZE) {
+        // Drop oldest event to prevent memory overflow
+        almostGone = eventDeque.front();
+        eventDeque.pop_front();
+        destroyEventPtr(almostGone);
+        puts("Shedding TCP events..");
+    }
+    eventDeque.push_back(event);
+    pthread_mutex_unlock(&mtx);
+    pthread_cond_signal(&cond);
+}
+```
+
+<Warning>
+When event production exceeds consumption rate, the system automatically sheds the oldest events. Monitor for "Shedding" messages in logs.
+</Warning>
+
+## Threading Model
+
+### Thread Architecture
+
+Both libraries use POSIX threads for concurrent operation:
+
+**tcpEvent threads:**
+```cpp
+pthread_t tid = 0;          // BPF polling thread
+pthread_t netLinkTid = 0;   // Netlink diagnostics thread
+```
+
+**Synchronization primitives:**
+```cpp
+pthread_cond_t cond;        // Condition variable for event signaling
+pthread_mutex_t mtx;        // Protects eventDeque
+pthread_mutex_t mapMu;      // Protects PtrMap for memory tracking
+pthread_rwlock_t rwlock;    // Read-write lock for status
+```
+
+### Thread Lifecycle
+
+<Accordion title="BPF Polling Thread">
+**Created in:** `setupBPF()` function (event.cc:176)
+
+**Initialization:**
+```cpp
+int setupBPF(const char *BPF_PROGRAM) {
+    tid = pthread_self();
+    bpf.init(BPF_PROGRAM);
+    bpf.attach_kprobe(FN_NAME, "kprobe__tcp_set_state");
+    bpf.open_perf_buffer(TABLE, &handle_output);
+    
+    while (1) {
+        bpf.poll_perf_buffer(TABLE);  // Blocking poll
+    }
+}
+```
+
+**Termination:** Cancelled in `cleanup()` via `pthread_cancel(tid)`
+</Accordion>
+
+<Accordion title="Netlink Polling Thread (TCP only)">
+**Created in:** `DequeuePerfEvent()` on first call (event.cc:117-121)
+
+**Purpose:** Continuously queries kernel socket diagnostics via netlink
+
+**Operation:**
+```cpp
+void netLinkProbe() {
+    netLinkTid = pthread_self();
+    while (1) {
+        findSocketInodes();          // Scan /proc/[pid]/fd/*
+        getEvents();                 // Query netlink for TCP stats
+        sleep(NETLINKNAP);          // 6.2 seconds between polls
+    }
+}
+```
+
+**Benefits:** Captures connection statistics even without state changes
+</Accordion>
+
+### Consumer Thread
+
+Applications call `DequeuePerfEvent()` which blocks until events are available:
+
+```cpp
+struct tcp_event_t DequeuePerfEvent() {
+    while (1) {
+        pthread_mutex_lock(&mtx);
+        if (!eventDeque.empty()) {
+            auto event = eventDeque.front();
+            eventDeque.pop_front();
+            pthread_mutex_unlock(&mtx);
+            // ... process and return event
+        } else {
+            pthread_cond_wait(&cond, &mtx);  // Wait for signal
+            pthread_mutex_unlock(&mtx);
+        }
+    }
+}
+```
+
+## Data Flow: Kernel to User Space
+
+### Event Capture Path
+
+1. **Kernel Function Call**
+   - Application calls socket operation (e.g., `connect()`, `send()`)
+   - Kernel executes `tcp_set_state`, `udp_sendmsg`, etc.
+
+2. **Kprobe Activation**
+   - eBPF program executes before/after kernel function
+   - Reads kernel memory: `struct sock`, addresses, ports
+   - Calls `bpf_get_current_pid_tgid()`, `bpf_get_current_uid_gid()`
+
+3. **Perf Buffer Submit**
+   ```c
+   bpfPerfBuffer.perf_submit(ctx, eventPtr, sizeof(*eventPtr));
+   ```
+
+4. **User Space Polling**
+   - `bpf.poll_perf_buffer()` retrieves events
+   - Invokes `handle_output()` callback
+
+5. **Event Enrichment**
+   - Timestamp adjustment: `event->EventTime + notSoLongAgo`
+   - Address conversion: `inet_ntop()` for IP addresses
+   - Process lookup: `readCmdLine()` from /proc
+
+6. **Consumer Delivery**
+   - `DequeuePerfEvent()` returns structured event
+   - Application processes network telemetry
+
+### TCP Netlink Enrichment
+
+TCP events get additional statistics via netlink socket diagnostics:
+
+```cpp
+// Build socket inode map from /proc
+findSocketInodes() → SockStrMap["socket:[12345]"] = pid
+
+// Query kernel for TCP stats
+sendDiagMsg() → sends inet_diag_req_v2
+harvestEvents() → receives inet_diag_msg replies
+
+// Extract statistics
+struct anu_tcp_info {
+    uint64_t tcpi_bytes_received;
+    uint64_t tcpi_bytes_sent;
+    uint32_t tcpi_segs_in;
+    uint32_t tcpi_segs_out;
+    // ... 40+ more fields
+};
+```
+
+<Info>
+The custom `anu_tcp_info` struct (common.h:75-148) extends standard `tcp_info` to include `tcpi_bytes_sent` which is critical for bandwidth tracking.
+</Info>
+
+## Process Attribution Mechanism
+
+Both libraries identify which process generated network events:
+
+### Inode-to-PID Mapping (TCP)
+
+```cpp
+int findSocketInodes() {
+    glob("/proc/[0-9]*/fd/*", &globbuf);  // Find all FDs
+    
+    for (path in globbuf.gl_pathv) {
+        readlink(path, symlinkName);      // "socket:[12345]"
+        
+        if (starts_with(symlinkName, "socket:[")) {
+            extract_pid_from_path(path);   // "/proc/1234/fd/5" → 1234
+            SockStrMap[symlinkName] = pid;
+        }
+    }
+}
+```
+
+### Reading Command Names
+
+```cpp
+int readCmdLine(uint32_t pid, char *writeTo, int maxLen) {
+    sprintf(cmdLine, "/proc/%u/cmdline", pid);
+    FILE *fp = fopen(cmdLine, "r");
+    fread(writeTo, maxLen, 1, fp);
+    return 0;
+}
+```
+
+<Note>
+Process information is captured at event time. Short-lived processes may show PID but missing command names if they exit before enrichment.
+</Note>
+
+## Memory Management
+
+### Event Lifecycle
+
+**TCP:** Uses pointer tracking map to prevent double-free
+```cpp
+std::map<event_t*, int> PtrMap;  // event.cc:30
+
+void destroyEventPtr(event_t* eventPtr) {
+    pthread_mutex_lock(&mapMu);
+    if (PtrMap.count(eventPtr) && PtrMap.erase(eventPtr)) {
+        delete(eventPtr);
+    }
+    pthread_mutex_unlock(&mapMu);
+}
+```
+
+**UDP:** Simpler model, events deleted after consumption
+```cpp
+event = eventDeque.front();
+eventDeque.pop_front();
+// Event copied to toConsumer struct, original discarded
+```
+
+### Time Synchronization
+
+```cpp
+static uint64_t whenDidWeBootUp() {
+    FILE *fp = fopen("/proc/uptime", "r");
+    double firstWord;  // Seconds since boot
+    fscanf(fp, "%lf", &firstWord);
+    return (time(0) - firstWord);  // Epoch time of boot
+}
+
+// Event timestamp adjustment (event.cc:133)
+toConsumer.EventTime = event->EventTime + notSoLongAgo;
+// where: notSoLongAgo = whenDidWeBootUp() * 1000000000LLU
+```
+
+## Component Communication
+
+### Public API
+
+Both libraries expose a minimal C-compatible API:
+
+```cpp
+extern "C" {
+    void AddProbe(const char *BPF_PROGRAM);  // Start monitoring
+    struct tcp_event_t DequeuePerfEvent();   // Get next event (blocking)
+    void cleanup();                          // Stop and detach
+    unsigned getStatus();                    // Check if initialized
+}
+```
+
+### Initialization Sequence
+
+```cpp
+// Application code
+AddProbe(BPF_PROGRAM_SOURCE);
+    ↓
+// Spawns detached thread
+std::thread t(setupBPF, BPF_PROGRAM);
+t.detach();
+    ↓
+// In setupBPF thread
+bpf.init(BPF_PROGRAM);              // Compile eBPF
+bpf.attach_kprobe(...);             // Attach to kernel
+bpf.open_perf_buffer(...);          // Setup event stream
+while(1) bpf.poll_perf_buffer(...); // Infinite polling
+```
+
+<Warning>
+`AddProbe()` returns immediately. Call `getStatus()` to verify initialization completed successfully before consuming events.
+</Warning>
+
+## Cleanup and Shutdown
+
+Proper teardown sequence:
+
+```cpp
+void cleanup() {
+    // Detach kprobes
+    bpf.detach_kprobe(FN_NAME);
+    
+    // Cancel threads
+    if (tid) pthread_cancel(tid);
+    if (netLinkTid) pthread_cancel(netLinkTid);
+    
+    // Queued events are NOT automatically freed
+    // Consumer should drain queue before cleanup
+}
+```
+
+## Performance Characteristics
+
+<CardGroup cols={2}>
+  <Card title="Event Latency" icon="clock">
+    - Kprobe execution: < 1μs
+    - Perf buffer transfer: < 10μs
+    - Queue processing: < 100μs
+    - **Total latency: ~100μs**
+  </Card>
+  
+  <Card title="Throughput" icon="gauge-high">
+    - Max queue size: 1024 events
+    - Shedding triggers at capacity
+    - Typical rate: 1K-10K events/sec
+    - **Peak: ~50K events/sec**
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="eBPF Overview" icon="kernel" href="/concepts/ebpf-overview">
+    Learn how eBPF programs are loaded and verified
+  </Card>
+  
+  <Card title="Event Collection" icon="database" href="/concepts/event-collection">
+    Understand event data structures and collection mechanics
+  </Card>
+</CardGroup>

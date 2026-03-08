@@ -1,97 +1,166 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "eBPF Event Interceptor"
+description: "High-performance network event tracers for Linux using eBPF (BCC) to monitor TCP and UDP traffic in real-time"
 ---
 
-## Setting up
+<div className="bg-gradient-to-r from-[#f58914] to-[#ff9d3d] text-white py-16 px-8 rounded-lg mb-8">
+  <h1 className="text-5xl font-bold mb-4">eBPF Event Interceptor</h1>
+  <p className="text-xl opacity-90 mb-8">Network event tracers for Linux using eBPF (BCC) to monitor TCP and UDP traffic in real-time</p>
+  <div className="flex gap-4">
+    <a href="/installation" className="bg-white text-[#f58914] px-6 py-3 rounded font-semibold hover:bg-opacity-90 transition">
+      Get Started
+    </a>
+    <a href="https://github.com/microsoft/eBPF-Event-Interceptor" className="border-2 border-white px-6 py-3 rounded font-semibold hover:bg-white hover:bg-opacity-10 transition">
+      View on GitHub
+    </a>
+  </div>
+</div>
 
-Get your documentation site up and running in minutes.
+## Overview
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+eBPF Event Interceptor is a lightweight C/C++ library that provides real-time network traffic monitoring capabilities for Linux systems. By leveraging eBPF (extended Berkeley Packet Filter) technology via BCC (BPF Compiler Collection), it enables efficient, low-overhead tracing of TCP and UDP network events directly from the kernel.
 
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="TCP Event Tracking" icon="network-wired" href="/guides/tcp-monitoring">
+    Monitor TCP connections with detailed metrics including bytes transferred, packet counts, and connection states
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="UDP Traffic Monitoring" icon="paper-plane" href="/guides/udp-monitoring">
+    Track UDP traffic patterns with support for both IPv4 and IPv6 protocols
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Process Attribution" icon="fingerprint" href="/concepts/event-collection">
+    Correlate network events with process information including PID, UID, and command names
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="High Performance" icon="gauge-high" href="/concepts/architecture">
+    Efficient perf buffer streaming with minimal overhead on system resources
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Key Features
 
-Everything you need to create world-class documentation.
+<CardGroup cols={3}>
+  <Card title="Real-time Monitoring" icon="bolt">
+    Capture network events as they happen with kernel-level eBPF probes
+  </Card>
+  <Card title="IPv4 & IPv6 Support" icon="globe">
+    Full support for both IPv4 and IPv6 network protocols
+  </Card>
+  <Card title="Rich Metrics" icon="chart-line">
+    Collect detailed metrics including bytes sent/received, packet counts, ports, and addresses
+  </Card>
+  <Card title="Netlink Integration" icon="link">
+    TCP monitoring enhanced with netlink socket diagnostics for comprehensive connection tracking
+  </Card>
+  <Card title="Low Overhead" icon="feather">
+    Efficient eBPF implementation minimizes performance impact
+  </Card>
+  <Card title="MIT Licensed" icon="scale-balanced">
+    Open source and free to use in commercial and personal projects
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Quick Start
 
-## Need inspiration?
+Get started with eBPF Event Interceptor in just a few steps:
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Install Dependencies">
+    Install BCC and build tools on your Linux system
+    ```bash
+    sudo apt install -y build-essential cmake
+    ```
+  </Step>
+  
+  <Step title="Clone and Build">
+    Clone the repository and compile the libraries
+    ```bash
+    git clone https://github.com/microsoft/eBPF-Event-Interceptor.git
+    cd eBPF-Event-Interceptor
+    mkdir build && cd build
+    cmake ../
+    make -j`nproc --ignore=1`
+    sudo make install
+    ```
+  </Step>
+  
+  <Step title="Start Monitoring">
+    Use the TCP or UDP event tracers in your application
+    ```c
+    #include "event.h"
+    
+    // Initialize TCP event tracer
+    AddProbe(BPF_PROGRAM);
+    
+    // Retrieve events
+    while (1) {
+        struct tcp_event_t event = DequeuePerfEvent();
+        // Process event...
+    }
+    ```
+  </Step>
+</Steps>
+
+## Use Cases
+
+<AccordionGroup>
+  <Accordion title="Network Security Monitoring">
+    Monitor network connections in real-time to detect suspicious traffic patterns, unauthorized connections, or potential security threats at the kernel level.
+  </Accordion>
+  
+  <Accordion title="Performance Analysis">
+    Analyze network performance metrics to identify bottlenecks, optimize data transfer patterns, and troubleshoot connectivity issues in production environments.
+  </Accordion>
+  
+  <Accordion title="Traffic Auditing">
+    Audit network traffic for compliance purposes by capturing detailed connection metadata including process information, data volumes, and connection timings.
+  </Accordion>
+  
+  <Accordion title="Application Observability">
+    Gain deep insights into application network behavior without modifying application code or adding instrumentation overhead.
+  </Accordion>
+</AccordionGroup>
+
+## Why eBPF?
+
+eBPF (extended Berkeley Packet Filter) is a revolutionary technology that allows running sandboxed programs in the Linux kernel without changing kernel source code or loading kernel modules. This provides:
+
+- **Safety**: eBPF programs are verified before execution to ensure they won't crash the kernel
+- **Performance**: Code runs directly in kernel space, avoiding expensive context switches
+- **Flexibility**: Attach to various kernel events and tracepoints without kernel modifications
+- **Real-time**: Capture events as they occur with minimal latency
+
+## Architecture
+
+The eBPF Event Interceptor consists of two main components:
+
+1. **TCP Event Tracer** (`libtcpEvent.so`) - Monitors TCP connections using kprobes on `tcp_set_state` and netlink socket diagnostics
+2. **UDP Event Tracer** (`libudpEvent.so`) - Tracks UDP traffic through kprobes on datagram and sendmsg/recvmsg functions
+
+Both components use BPF perf buffers for efficient event streaming from kernel to user space.
+
+<CardGroup cols={2}>
+  <Card title="Learn the Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand how the components work together
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/tcp/overview">
+    Explore the complete API documentation
+  </Card>
+</CardGroup>
+
+## Community & Support
+
+This project is maintained by Microsoft and welcomes contributions from the community.
+
+<CardGroup cols={2}>
+  <Card title="Contributing" icon="code-pull-request" href="https://github.com/microsoft/eBPF-Event-Interceptor/blob/main/CONTRIBUTING.md">
+    Learn how to contribute to the project
+  </Card>
+  <Card title="Report Issues" icon="bug" href="https://github.com/microsoft/eBPF-Event-Interceptor/issues">
+    Report bugs or request features
+  </Card>
+  <Card title="Security" icon="shield" href="https://github.com/microsoft/eBPF-Event-Interceptor/security/policy">
+    Review our security policy
+  </Card>
+  <Card title="License" icon="file-contract" href="https://github.com/microsoft/eBPF-Event-Interceptor/blob/main/LICENSE">
+    MIT License - free for commercial use
+  </Card>
+</CardGroup>
